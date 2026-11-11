@@ -1,0 +1,28 @@
+{
+  "_comment": "Real Clash Royale stats at Tournament Standard (level 11), the standard competitive reference level. Units: elixir=cost, hp, damage per hit, hit_speed=seconds between hits, range/sight/collision_radius/splash_radius in tiles, speed in tiles/second (Slow 0.75, Medium 1.0, Fast 1.5, Very Fast 2.0), deploy handled globally (1s), lifetime in seconds. targets: ground|air|both. target_buildings_only: unit only attacks buildings. crown_tower_damage_pct: spell damage dealt to crown towers. These are real balance numbers; verify against your own decoded data if you need a different level or patch.",
+  "_level": 11,
+  "cards": {
+    "knight":      {"elixir": 3, "type": "troop", "hp": 1452, "damage": 167, "hit_speed": 1.1, "range": 1.2, "sight": 5.5, "speed": 1.0, "collision_radius": 0.5, "targets": "ground", "projectile_speed": 0},
+    "archers":     {"elixir": 3, "type": "troop", "count": 2, "hp": 304, "damage": 107, "hit_speed": 1.2, "range": 5.0, "sight": 5.5, "speed": 1.0, "collision_radius": 0.4, "targets": "both", "projectile_speed": 9.0},
+    "goblins":     {"elixir": 2, "type": "troop", "count": 3, "hp": 169, "damage": 120, "hit_speed": 1.1, "range": 0.8, "sight": 5.5, "speed": 2.0, "collision_radius": 0.4, "targets": "ground", "projectile_speed": 0},
+    "skeletons":   {"elixir": 1, "type": "troop", "count": 3, "hp": 81,  "damage": 81,  "hit_speed": 1.0, "range": 0.7, "sight": 5.5, "speed": 1.5, "collision_radius": 0.3, "targets": "ground", "projectile_speed": 0},
+    "minions":     {"elixir": 3, "type": "troop", "count": 3, "hp": 190, "damage": 107, "hit_speed": 1.0, "range": 2.0, "sight": 5.5, "speed": 1.5, "collision_radius": 0.4, "targets": "both", "flying": true, "projectile_speed": 0},
+    "barbarians":  {"elixir": 5, "type": "troop", "count": 5, "hp": 636, "damage": 159, "hit_speed": 1.4, "range": 0.8, "sight": 5.5, "speed": 1.0, "collision_radius": 0.5, "targets": "ground", "projectile_speed": 0},
+    "musketeer":   {"elixir": 4, "type": "troop", "hp": 598,  "damage": 176, "hit_speed": 1.0, "range": 6.0, "sight": 6.0, "speed": 1.0, "collision_radius": 0.5, "targets": "both", "projectile_speed": 10.0},
+    "minipekka":   {"elixir": 4, "type": "troop", "hp": 1361, "damage": 720, "hit_speed": 1.8, "range": 0.8, "sight": 5.5, "speed": 1.5, "collision_radius": 0.5, "targets": "ground", "projectile_speed": 0},
+    "valkyrie":    {"elixir": 4, "type": "troop", "hp": 1908, "damage": 253, "hit_speed": 1.5, "range": 1.2, "sight": 5.5, "speed": 1.0, "collision_radius": 0.6, "targets": "ground", "splash_radius": 1.2, "projectile_speed": 0},
+    "wizard":      {"elixir": 5, "type": "troop", "hp": 598,  "damage": 281, "hit_speed": 1.4, "range": 5.5, "sight": 5.5, "speed": 1.0, "collision_radius": 0.5, "targets": "both", "splash_radius": 1.3, "projectile_speed": 8.0},
+    "babydragon":  {"elixir": 4, "type": "troop", "hp": 1152, "damage": 160, "hit_speed": 1.6, "range": 3.5, "sight": 5.5, "speed": 1.5, "collision_radius": 0.5, "targets": "both", "flying": true, "splash_radius": 1.2, "projectile_speed": 8.0},
+    "giant":       {"elixir": 5, "type": "troop", "hp": 3275, "damage": 211, "hit_speed": 1.5, "range": 0.8, "sight": 7.5, "speed": 0.75, "collision_radius": 0.75, "targets": "ground", "target_buildings_only": true, "projectile_speed": 0},
+    "hogrider":    {"elixir": 4, "type": "troop", "hp": 1696, "damage": 264, "hit_speed": 1.6, "range": 0.8, "sight": 7.5, "speed": 2.0, "collision_radius": 0.5, "targets": "ground", "target_buildings_only": true, "jumps_river": true, "projectile_speed": 0},
+    "prince":      {"elixir": 5, "type": "troop", "hp": 1920, "damage": 392, "hit_speed": 1.4, "range": 1.6, "sight": 5.5, "speed": 1.0, "collision_radius": 0.6, "targets": "ground", "charge": {"min_distance": 2.5, "speed_mult": 2.0, "damage_mult": 2.0}, "projectile_speed": 0},
+    "cannon":      {"elixir": 3, "type": "building", "hp": 742, "damage": 212, "hit_speed": 0.9, "range": 5.5, "sight": 5.5, "speed": 0.0, "collision_radius": 0.5, "targets": "ground", "lifetime": 30.0, "projectile_speed": 0},
+    "fireball":    {"elixir": 4, "type": "spell", "damage": 689, "radius": 2.5, "crown_tower_damage_pct": 30, "projectile_speed": 6.0, "targets": "both"},
+    "arrows":      {"elixir": 3, "type": "spell", "damage": 243, "radius": 4.0, "crown_tower_damage_pct": 30, "projectile_speed": 7.0, "targets": "both"},
+    "zap":         {"elixir": 2, "type": "spell", "damage": 192, "radius": 2.5, "crown_tower_damage_pct": 30, "stun": 0.5, "projectile_speed": 12.0, "targets": "both"}
+  },
+  "towers": {
+    "princess_tower": {"hp": 2534, "damage": 109, "hit_speed": 0.8, "range": 7.5, "collision_radius": 0.5, "targets": "both", "projectile_speed": 9.0},
+    "king_tower":     {"hp": 4008, "damage": 109, "hit_speed": 1.0, "range": 7.0, "collision_radius": 0.6, "targets": "both", "projectile_speed": 9.0, "starts_dormant": true}
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "cr-sim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Deterministic fixed-point Clash-Royale-style battle simulator for RL."
+
+[lib]
+name = "cr_sim_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
