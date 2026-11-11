@@ -4,7 +4,7 @@
 //! bit-identically from its seed + action log.
 
 use crate::arena::*;
-use crate::cards::{CardType, Library, Targets};
+use crate::cards::{CardType, Library, SpellEffect, Targets};
 use crate::entity::{Entity, Projectile};
 use crate::fixed::{Fx, V2};
 use crate::rng::Rng;
@@ -33,12 +33,35 @@ pub enum Outcome {
 
 const HAND: usize = 4;
 
+#[derive(Clone, Copy)]
+enum AeoKind {
+    Damage, // DoT to enemies (poison, earthquake)
+    Rage,   // buff allies
+    Heal,   // heal allies
+    Slow,   // slow enemies
+    Freeze, // freeze enemies
+}
+
+/// A lingering area effect on the field (poison/rage/heal zone, etc.).
+struct AreaEffect {
+    owner: u8,
+    pos: V2,
+    radius: Fx,
+    ticks_left: i32,
+    interval: i32,
+    timer: i32,
+    kind: AeoKind,
+    power: i32,
+    crown_pct: i32,
+}
+
 pub struct Engine {
     pub lib: Library,
     pub rng: Rng,
     pub tick: i64,
     pub entities: Vec<Entity>,
     pub projectiles: Vec<Projectile>,
+    area_effects: Vec<AreaEffect>,
     next_id: u32,
     pub elixir: [Fx; 2],
     pub deck: [Vec<usize>; 2], // 8 def ids each
@@ -57,6 +80,7 @@ impl Engine {
             tick: 0,
             entities: Vec::new(),
             projectiles: Vec::new(),
+            area_effects: Vec::new(),
             next_id: 1,
             elixir: [Fx(0); 2],
             deck: [Vec::new(), Vec::new()],
@@ -89,6 +113,7 @@ impl Engine {
         self.tick = 0;
         self.entities.clear();
         self.projectiles.clear();
+        self.area_effects.clear();
         self.next_id = 1;
         self.elixir = [Fx::from_int(START_ELIXIR); 2];
         self.crowns = [0, 0];
@@ -132,6 +157,10 @@ impl Engine {
             deploy: 0,
             lifetime: -1,
             stun: 0,
+            slow: 0,
+            rage: 0,
+            shield_hp: 0,
+            spawn_timer: -1,
             charge_dist: Fx(0),
             is_tower: true,
             is_king,
@@ -155,9 +184,17 @@ impl Engine {
             max_hp: d.hp,
             target: None,
             cooldown: 0,
-            deploy: DEPLOY_TICKS,
+            deploy: d.deploy_ticks.max(0),
             lifetime: d.lifetime_ticks,
             stun: 0,
+            slow: 0,
+            rage: 0,
+            shield_hp: d.shield,
+            spawn_timer: if d.spawn_id.is_some() && d.spawn_interval_ticks > 0 {
+                d.spawn_interval_ticks
+            } else {
+                -1
+            },
             charge_dist: Fx(0),
             is_tower: false,
             is_king: false,
@@ -270,21 +307,130 @@ impl Engine {
 
     fn cast_spell(&mut self, owner: u8, def: usize, pos: V2) {
         let d = &self.lib.defs[def];
-        // deliver as an instant-ish area strike (projectile with splash and no target)
-        self.projectiles.push(Projectile {
-            owner,
-            pos,
-            target: None,
-            aim: pos,
-            speed: if d.proj_speed.0 > 0 { d.proj_speed } else { Fx::from_int(100) },
-            damage: d.damage,
-            splash: if d.spell_radius.0 > 0 { d.spell_radius } else { Fx::from_f64(1.0) },
-            crown_pct: d.crown_pct,
-            stun_ticks: d.stun_ticks,
-            hits_flying: true,
-            hits_ground: true,
-            dead: false,
-        });
+        let (damage, radius, proj_speed, crown_pct, stun_ticks) =
+            (d.damage, d.spell_radius, d.proj_speed, d.crown_pct, d.stun_ticks);
+        let (effect, eticks, einterval, epower) =
+            (d.effect, d.effect_ticks, d.effect_interval, d.effect_power);
+        let rad = if radius.0 > 0 { radius } else { Fx::from_f64(1.0) };
+
+        // instant damage component (Fireball/Arrows/Zap, and the hit of effect spells)
+        if damage > 0 {
+            self.projectiles.push(Projectile {
+                owner,
+                pos,
+                target: None,
+                aim: pos,
+                speed: if proj_speed.0 > 0 { proj_speed } else { Fx::from_int(100) },
+                damage,
+                splash: rad,
+                crown_pct,
+                stun_ticks,
+                hits_flying: true,
+                hits_ground: true,
+                dead: false,
+            });
+        }
+
+        // effect component
+        match effect {
+            SpellEffect::None => {}
+            SpellEffect::Freeze | SpellEffect::Slow => {
+                let r2 = rad.mul(rad);
+                for e in self.entities.iter_mut() {
+                    if e.dead || e.owner == owner {
+                        continue;
+                    }
+                    let dx = e.pos.x - pos.x;
+                    let dy = e.pos.y - pos.y;
+                    if dx.mul(dx) + dy.mul(dy) > r2 {
+                        continue;
+                    }
+                    if effect == SpellEffect::Freeze {
+                        e.stun = e.stun.max(eticks);
+                    } else if !e.is_tower {
+                        e.slow = e.slow.max(eticks);
+                    }
+                }
+            }
+            SpellEffect::Poison => self.area_effects.push(AreaEffect {
+                owner, pos, radius: rad, ticks_left: eticks.max(1),
+                interval: einterval.max(1), timer: einterval.max(1),
+                kind: AeoKind::Damage, power: epower, crown_pct,
+            }),
+            SpellEffect::Rage => self.area_effects.push(AreaEffect {
+                owner, pos, radius: rad, ticks_left: eticks.max(1),
+                interval: 5, timer: 0, kind: AeoKind::Rage, power: 0, crown_pct: 100,
+            }),
+            SpellEffect::Heal => self.area_effects.push(AreaEffect {
+                owner, pos, radius: rad, ticks_left: eticks.max(1),
+                interval: einterval.max(1), timer: einterval.max(1),
+                kind: AeoKind::Heal, power: epower, crown_pct: 100,
+            }),
+        }
+    }
+
+    /// Apply lingering area effects (poison DoT, rage/heal zones). Deaths from
+    /// DoT are picked up by the end-of-tick death pass in `apply_damage`.
+    fn apply_area_effects(&mut self) {
+        if self.area_effects.is_empty() {
+            return;
+        }
+        let mut events: Vec<(AeoKind, u8, V2, Fx, i32, i32)> = Vec::new();
+        for ae in self.area_effects.iter_mut() {
+            if ae.ticks_left > 0 {
+                ae.ticks_left -= 1;
+            }
+            ae.timer -= 1;
+            if ae.timer <= 0 {
+                events.push((ae.kind, ae.owner, ae.pos, ae.radius, ae.power, ae.crown_pct));
+                ae.timer = ae.interval.max(1);
+            }
+        }
+        self.area_effects.retain(|ae| ae.ticks_left > 0);
+        for (kind, owner, pos, radius, power, crown_pct) in events {
+            let r2 = radius.mul(radius);
+            for e in self.entities.iter_mut() {
+                if e.dead {
+                    continue;
+                }
+                let dx = e.pos.x - pos.x;
+                let dy = e.pos.y - pos.y;
+                if dx.mul(dx) + dy.mul(dy) > r2 {
+                    continue;
+                }
+                let enemy = e.owner != owner;
+                match kind {
+                    AeoKind::Damage => {
+                        if enemy {
+                            e.hp -= if e.is_tower { power * crown_pct / 100 } else { power };
+                            if e.is_king {
+                                e.activated = true;
+                            }
+                        }
+                    }
+                    AeoKind::Heal => {
+                        if !enemy && !e.is_tower {
+                            e.hp = (e.hp + power).min(e.max_hp);
+                        }
+                    }
+                    AeoKind::Rage => {
+                        if !enemy {
+                            e.rage = e.rage.max(7);
+                        }
+                    }
+                    AeoKind::Slow => {
+                        if enemy && !e.is_tower {
+                            e.slow = e.slow.max(7);
+                        }
+                    }
+                    AeoKind::Freeze => {
+                        if enemy {
+                            e.stun = e.stun.max(7);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---- simulation ----
@@ -317,6 +463,12 @@ impl Engine {
             if e.stun > 0 {
                 e.stun -= 1;
             }
+            if e.slow > 0 {
+                e.slow -= 1;
+            }
+            if e.rage > 0 {
+                e.rage -= 1;
+            }
             if e.lifetime > 0 {
                 e.lifetime -= 1;
                 if e.lifetime == 0 {
@@ -324,6 +476,35 @@ impl Engine {
                 }
             }
         }
+
+        // 2b. spawner buildings periodically produce units
+        let mut spawns: Vec<(u8, usize, V2)> = Vec::new();
+        for i in 0..self.entities.len() {
+            if self.entities[i].spawn_timer < 0 || !self.entities[i].active() {
+                continue;
+            }
+            self.entities[i].spawn_timer -= 1;
+            if self.entities[i].spawn_timer <= 0 {
+                let def = self.entities[i].def;
+                let owner = self.entities[i].owner;
+                let pos = self.entities[i].pos;
+                let d = &self.lib.defs[def];
+                if let Some(sid) = d.spawn_id {
+                    let dir = if owner == 0 { Fx::from_int(1) } else { Fx::from_int(-1) };
+                    let front = V2::new(pos.x, pos.y + dir);
+                    for _ in 0..d.spawn_count.max(1) {
+                        spawns.push((owner, sid, front));
+                    }
+                    self.entities[i].spawn_timer = d.spawn_interval_ticks.max(1);
+                }
+            }
+        }
+        for (owner, sid, pos) in spawns {
+            self.spawn_unit(owner, sid, pos);
+        }
+
+        // 2c. lingering area effects (poison/rage/heal zones)
+        self.apply_area_effects();
 
         let n = self.entities.len();
         let snap = Snap::build(&self.entities, &self.lib);
@@ -362,9 +543,8 @@ impl Engine {
                 set_engaged[i] = true;
                 if d.damage > 0 && e.cooldown == 0 {
                     if !e.engaged {
-                        // first contact: wind up before the first hit lands
-                        let load = (TICKS_PER_SECOND as i32 / 5).clamp(1, d.hit_ticks.max(1));
-                        set_cd[i] = Some(load);
+                        // first contact: wait this card's load time before the first hit
+                        set_cd[i] = Some(d.load_ticks.max(1));
                     } else {
                         let charged = d.charge.map_or(false, |c| e.charge_dist >= c.min_distance);
                         let mult = if charged { d.charge.unwrap().damage_mult } else { 1 };
@@ -386,18 +566,24 @@ impl Engine {
                                 dead: false,
                             });
                         }
-                        set_cd[i] = Some(d.hit_ticks);
+                        set_cd[i] = Some(cadence(d.hit_ticks, e.rage > 0, e.slow > 0));
                         set_charge[i] = Some(Fx(0));
                     }
                 }
             } else if mover {
                 let goal = goal_point(ipos, d, tpos);
                 let charged = d.charge.map_or(false, |c| e.charge_dist >= c.min_distance);
-                let speed = if charged {
+                let mut speed = if charged {
                     d.speed.mul(d.charge.unwrap().speed_mult)
                 } else {
                     d.speed
                 };
+                if e.rage > 0 {
+                    speed = speed.mul(Fx::from_f64(1.35));
+                }
+                if e.slow > 0 {
+                    speed = speed.mul(Fx::from_f64(0.65));
+                }
                 let mv = goal.sub(ipos).step_toward(speed);
                 let mut np = V2::new(ipos.x + mv.x, ipos.y + mv.y);
                 np = block_river(ipos, np, d);
@@ -501,6 +687,7 @@ impl Engine {
         let pos: Vec<V2> = self.entities.iter().map(|e| e.pos).collect();
         let half: Vec<V2> = self.entities.iter().map(|e| e.half).collect();
         let rad: Vec<Fx> = self.entities.iter().map(|e| self.lib.defs[e.def].radius).collect();
+        let mass: Vec<Fx> = self.entities.iter().map(|e| self.lib.defs[e.def].mass).collect();
         let flying: Vec<bool> = self.entities.iter().map(|e| self.lib.defs[e.def].flying).collect();
         let solid: Vec<bool> = self
             .entities
@@ -569,9 +756,12 @@ impl Engine {
                     } else if immov[b] {
                         disp[a] = disp[a].sub(V2::new(dirx.mul(overlap), diry.mul(overlap)));
                     } else {
-                        let h = overlap.divi(2);
-                        disp[a] = disp[a].sub(V2::new(dirx.mul(h), diry.mul(h)));
-                        disp[b] = disp[b].add(V2::new(dirx.mul(h), diry.mul(h)));
+                        // split the push inversely to mass: heavier bodies move less
+                        let total = mass[a] + mass[b];
+                        let fa = if total.0 > 0 { overlap.mul(mass[b]).div(total) } else { overlap.divi(2) };
+                        let fb = if total.0 > 0 { overlap.mul(mass[a]).div(total) } else { overlap.divi(2) };
+                        disp[a] = disp[a].sub(V2::new(dirx.mul(fa), diry.mul(fa)));
+                        disp[b] = disp[b].add(V2::new(dirx.mul(fb), diry.mul(fb)));
                     }
                 }
             }
@@ -683,12 +873,23 @@ impl Engine {
                 self.entities[i].stun = s;
             }
             if dmg[i] > 0 && !self.entities[i].dead {
-                self.entities[i].hp -= dmg[i];
-                if self.entities[i].is_tower {
+                // shield absorbs first
+                let mut rem = dmg[i];
+                if self.entities[i].shield_hp > 0 {
+                    let absorbed = rem.min(self.entities[i].shield_hp);
+                    self.entities[i].shield_hp -= absorbed;
+                    rem -= absorbed;
+                }
+                if rem > 0 {
+                    self.entities[i].hp -= rem;
+                }
+                // The king wakes only when the KING ITSELF is damaged...
+                if self.entities[i].is_king {
                     activate[self.entities[i].owner as usize] = true;
                 }
             }
         }
+        let mut death_spawns: Vec<(u8, usize, V2)> = Vec::new();
         for i in 0..self.entities.len() {
             let e = &self.entities[i];
             if e.dead || e.hp > 0 {
@@ -697,11 +898,24 @@ impl Engine {
             let owner = e.owner as usize;
             let is_tower = e.is_tower;
             let is_king = e.is_king;
-            let cv = self.lib.defs[e.def].crown_value;
+            let d = &self.lib.defs[e.def];
+            let cv = d.crown_value;
+            // on-death spawns (Golem -> golemites, barrels, skeletons, ...)
+            if !is_tower {
+                if let Some(did) = d.death_id {
+                    for k in 0..d.death_count.max(1) {
+                        let off = Self::spawn_offset(k, d.death_count.max(1));
+                        death_spawns.push((e.owner, did, V2::new(e.pos.x + off.x, e.pos.y + off.y)));
+                    }
+                }
+            }
             self.entities[i].dead = true;
             if is_tower {
                 self.crowns[1 - owner] += cv;
-                activate[owner] = true;
+                // ...or when one of its PRINCESS towers is destroyed (not merely chipped).
+                if !is_king {
+                    activate[owner] = true;
+                }
                 if is_king && self.outcome == Outcome::Running {
                     self.outcome = if owner == 0 { Outcome::Win1 } else { Outcome::Win0 };
                 }
@@ -713,6 +927,9 @@ impl Engine {
             }
         }
         self.entities.retain(|e| !e.dead);
+        for (owner, did, pos) in death_spawns {
+            self.spawn_unit(owner, did, pos);
+        }
     }
 
     fn min_tower_hp(&self, player: u8) -> i32 {
@@ -766,6 +983,19 @@ impl Engine {
             Outcome::Draw
         };
     }
+}
+
+/// Scale an attack interval for rage (faster) / slow (slower). Integer math.
+#[inline]
+fn cadence(base: i32, rage: bool, slow: bool) -> i32 {
+    let mut v = base;
+    if rage {
+        v = v * 100 / 135;
+    }
+    if slow {
+        v = v * 154 / 100;
+    }
+    v.max(1)
 }
 
 /// Reduce damage dealt to crown towers by `crown_pct` percent.
@@ -876,7 +1106,8 @@ impl Snap {
             s.rad.push(d.radius);
             s.is_tower.push(e.is_tower);
             s.is_building.push(d.ctype == CardType::Building);
-            s.alive.push(e.alive());
+            // A unit is a valid target only once placed (not during its deploy time).
+            s.alive.push(e.alive() && e.deploy <= 0);
             s.id.push(e.id);
             s.id2idx.insert(e.id, i);
         }

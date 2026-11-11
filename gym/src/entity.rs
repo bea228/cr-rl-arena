@@ -16,7 +16,11 @@ pub struct Entity {
     pub cooldown: i32,  // ticks until able to attack again
     pub deploy: i32,    // ticks until active (0 = active)
     pub lifetime: i32,  // ticks remaining (-1 = infinite)
-    pub stun: i32,      // ticks of stun remaining
+    pub stun: i32,      // ticks of stun/freeze remaining (can't move or attack)
+    pub slow: i32,      // ticks slowed (reduced move + attack speed)
+    pub rage: i32,      // ticks raged (increased move + attack speed)
+    pub shield_hp: i32, // absorbs damage before hp (Dark Prince, Guards, Recruits)
+    pub spawn_timer: i32, // ticks until this spawner building produces units
     pub charge_dist: Fx,// distance moved toward target unobstructed (prince)
     pub is_tower: bool,
     pub is_king: bool,

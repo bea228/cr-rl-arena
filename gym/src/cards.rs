@@ -21,6 +21,30 @@ pub enum Targets {
     Both,
 }
 
+/// Lingering or applied spell effect, beyond instant damage.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpellEffect {
+    None,
+    Poison, // damage-over-time zone (enemies)
+    Rage,   // speed/attack buff zone (allies)
+    Heal,   // heal-over-time zone (allies)
+    Freeze, // area freeze (enemies, duration)
+    Slow,   // area slow (enemies, duration)
+}
+
+impl SpellEffect {
+    fn parse(s: &str) -> SpellEffect {
+        match s {
+            "poison" => SpellEffect::Poison,
+            "rage" => SpellEffect::Rage,
+            "heal" => SpellEffect::Heal,
+            "freeze" => SpellEffect::Freeze,
+            "slow" => SpellEffect::Slow,
+            _ => SpellEffect::None,
+        }
+    }
+}
+
 impl Targets {
     fn parse(s: &str) -> Targets {
         match s {
@@ -56,9 +80,11 @@ pub struct CardDef {
     pub hp: i32,
     pub damage: i32,
     pub hit_ticks: i32,
+    pub load_ticks: i32, // delay from entering range to the FIRST hit landing
     pub range: Fx,
     pub sight: Fx,
     pub radius: Fx,
+    pub mass: Fx,  // push weight: heavier bodies move less in a collision
     pub speed: Fx, // tiles per tick
     pub targets: Targets,
     pub count: i32,
@@ -74,6 +100,23 @@ pub struct CardDef {
     pub charge: Option<Charge>,
     pub crown_value: i32, // towers: crowns awarded when destroyed
     pub starts_dormant: bool,
+    pub deployable: bool,  // false = summoned only (golemite, hut spawns), not deck-legal
+    pub deploy_ticks: i32, // time from placement to becoming active
+    pub shield: i32,       // starting shield hp absorbed before body hp
+    // spawner building: periodically produces `spawn_count` of `spawn_name`
+    pub spawn_count: i32,
+    pub spawn_interval_ticks: i32,
+    pub spawn_name: Option<String>,
+    pub spawn_id: Option<usize>,
+    // on death, spawn `death_count` of `death_name` at this unit's position
+    pub death_count: i32,
+    pub death_name: Option<String>,
+    pub death_id: Option<usize>,
+    // spell lingering/applied effect
+    pub effect: SpellEffect,
+    pub effect_ticks: i32,    // duration
+    pub effect_interval: i32, // ticks between DoT/heal applications
+    pub effect_power: i32,    // damage or heal per application
 }
 
 // ---- raw JSON shapes ----
@@ -86,6 +129,19 @@ struct RawCharge {
 }
 
 #[derive(Deserialize, Default)]
+struct RawSpawn {
+    card: String,
+    count: Option<i64>,
+    interval: Option<f64>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawDeath {
+    card: String,
+    count: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
 struct RawCard {
     elixir: Option<i64>,
     #[serde(rename = "type")]
@@ -93,10 +149,12 @@ struct RawCard {
     hp: Option<i64>,
     damage: Option<i64>,
     hit_speed: Option<f64>,
+    load_time: Option<f64>,
     range: Option<f64>,
     sight: Option<f64>,
     speed: Option<f64>,
     collision_radius: Option<f64>,
+    mass: Option<f64>,
     targets: Option<String>,
     count: Option<i64>,
     flying: Option<bool>,
@@ -110,6 +168,15 @@ struct RawCard {
     stun: Option<f64>,
     charge: Option<RawCharge>,
     starts_dormant: Option<bool>,
+    deploy_time: Option<f64>,
+    shield: Option<i64>,
+    spawn: Option<RawSpawn>,
+    death_spawn: Option<RawDeath>,
+    effect: Option<String>,
+    effect_duration: Option<f64>,
+    effect_interval: Option<f64>,
+    effect_power: Option<i64>,
+    deployable: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -145,9 +212,15 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         hp: r.hp.unwrap_or(0) as i32,
         damage: r.damage.unwrap_or(0) as i32,
         hit_ticks: r.hit_speed.map(secs_to_ticks).unwrap_or(0).max(1),
+        load_ticks: r
+            .load_time
+            .map(secs_to_ticks)
+            .unwrap_or(TICKS_PER_SECOND as i32 / 5)
+            .max(1),
         range: Fx::from_f64(r.range.unwrap_or(0.0)),
         sight: Fx::from_f64(r.sight.unwrap_or(5.5)),
         radius: Fx::from_f64(r.collision_radius.unwrap_or(0.5)),
+        mass: Fx::from_f64(r.mass.unwrap_or_else(|| r.collision_radius.unwrap_or(0.5))),
         speed: per_tick(r.speed.unwrap_or(0.0)),
         targets: Targets::parse(r.targets.as_deref().unwrap_or("ground")),
         count: r.count.unwrap_or(1).max(1) as i32,
@@ -163,6 +236,25 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         charge,
         crown_value: 0,
         starts_dormant: r.starts_dormant.unwrap_or(false),
+        deployable: r.deployable.unwrap_or(true),
+        deploy_ticks: r.deploy_time.map(secs_to_ticks).unwrap_or(TICKS_PER_SECOND as i32),
+        shield: r.shield.unwrap_or(0) as i32,
+        spawn_count: r.spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
+        spawn_interval_ticks: r
+            .spawn
+            .as_ref()
+            .and_then(|s| s.interval)
+            .map(secs_to_ticks)
+            .unwrap_or(0),
+        spawn_name: r.spawn.as_ref().map(|s| s.card.clone()),
+        spawn_id: None,
+        death_count: r.death_spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
+        death_name: r.death_spawn.as_ref().map(|s| s.card.clone()),
+        death_id: None,
+        effect: r.effect.as_deref().map(SpellEffect::parse).unwrap_or(SpellEffect::None),
+        effect_ticks: r.effect_duration.map(secs_to_ticks).unwrap_or(0),
+        effect_interval: r.effect_interval.map(secs_to_ticks).unwrap_or(TICKS_PER_SECOND as i32),
+        effect_power: r.effect_power.unwrap_or(0) as i32,
     }
 }
 
@@ -184,9 +276,13 @@ impl Library {
         let mut deployable = Vec::new();
         for (name, rc) in &raw.cards {
             let id = defs.len();
-            defs.push(resolve(name, rc, None));
+            let def = resolve(name, rc, None);
+            let is_deployable = def.deployable;
+            defs.push(def);
             index.insert(name.clone(), id);
-            deployable.push(id);
+            if is_deployable {
+                deployable.push(id);
+            }
         }
         let mut princess_tower = usize::MAX;
         let mut king_tower = usize::MAX;
@@ -204,6 +300,15 @@ impl Library {
         }
         if princess_tower == usize::MAX || king_tower == usize::MAX {
             return Err("cards.json towers must define princess_tower and king_tower".into());
+        }
+        // Link inter-card references now that every name is in the index.
+        for i in 0..defs.len() {
+            if let Some(n) = defs[i].spawn_name.clone() {
+                defs[i].spawn_id = index.get(&n).copied();
+            }
+            if let Some(n) = defs[i].death_name.clone() {
+                defs[i].death_id = index.get(&n).copied();
+            }
         }
         Ok(Library { defs, index, deployable, princess_tower, king_tower })
     }
