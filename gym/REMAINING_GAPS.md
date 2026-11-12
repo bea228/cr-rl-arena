@@ -192,18 +192,38 @@ not implemented.
 
 ## B. Scope decisions (confirm & document — do NOT implement)
 
-- [ ] **B1 — Tick/decision granularity.** Keep the deterministic 20 Hz core tick (changing
+- [x] **B1 — Tick/decision granularity.** Keep the deterministic 20 Hz core tick (changing
   it rescales every tuned stat); decision cadence is already configurable (`CR_DECISION_EVERY`).
   Confirm + document as by-design.
-- [ ] **B2 — Pathfinding sub-tile exactness / instant turning.** The tile flow field is
+  CONFIRMED by-design: `arena.rs TICKS_PER_SECOND = 20` is the fixed simulation tick that
+  every stat is calibrated against (times×20, speeds/20); changing it would rescale the whole
+  table. Agent decision cadence is already decoupled and configurable:
+  `server/cr_server/match.py DECISION_EVERY = CR_DECISION_EVERY` (default 4 ⇒ 5 Hz decisions,
+  `=1` to act every tick) while the core still steps at 20 Hz. No change needed.
+- [x] **B2 — Pathfinding sub-tile exactness / instant turning.** The tile flow field is
   faithful at tile granularity; sub-tile bank-hugging and facing/turn delay are intentionally
   not modelled. Confirm + document.
-- [ ] **B3 — Game modes.** 1v1 only; no 2v2, draft, Touchdown, or event rulesets. By design
+  CONFIRMED by-design: movement uses a per-tick BFS tile flow field (`PathGrid`, `path_goal`,
+  cross-tick `PathCache` memo in engine.rs) that routes around river/towers/buildings at tile
+  granularity and is deterministic. Sub-tile bank-hugging and facing/turn-rate delay are
+  deliberately not modelled (they would add float-prone, order-sensitive state for little RL
+  value). Off-limits per the work rules; no change.
+- [x] **B3 — Game modes.** 1v1 only; no 2v2, draft, Touchdown, or event rulesets. By design
   for the hackathon. Confirm + document.
-- [ ] **B4 — Matchmaking.** Server pairs by queue order with its own Elo ladder, not CR
+  CONFIRMED by-design: the engine is hard-wired 2-seat 1v1 (`elixir: [Fx; 2]`, `player > 1`
+  rejected, `for p in 0..2`). No 2v2/draft/Touchdown/event rulesets exist (grep clean). This
+  is the intended hackathon scope. No change.
+- [x] **B4 — Matchmaking.** Server pairs by queue order with its own Elo ladder, not CR
   trophy bands. By design. Confirm + document.
-- [ ] **B5 — Event-only card variants.** Super/Party/Chess variants are out of standard-
+  CONFIRMED by-design: agents "join the queue and are paired" (`server/cr_server/server.py`)
+  and results update a persistent Elo ladder (`cr_server/elo.py` + `leaderboard.py`,
+  `elo.update`). There are no CR trophy bands / chests / ladder-progression — an Elo ladder is
+  the intended competition model. No change.
+- [x] **B5 — Event-only card variants.** Super/Party/Chess variants are out of standard-
   ladder scope. Confirm + document.
+  CONFIRMED by-design: the 128-card roster is the standard-ladder set; no Super/Party/Chess
+  event variants are present (grep of cards.json clean) and the decoded `*_ev1`/`super*`/event
+  TOMLs are intentionally excluded. No change.
 
 ---
 
