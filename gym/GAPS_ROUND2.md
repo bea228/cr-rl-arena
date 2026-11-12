@@ -32,7 +32,7 @@ items open. This round closes them. Same discipline as before.
 
 ## Items
 
-- [ ] **R1 — Mother Witch (curse-on-hit).** Internal name `WitchMother` (mana 4 Legendary;
+- [x] **R1 — Mother Witch (curse-on-hit).** Internal name `WitchMother` (mana 4 Legendary;
   NOT `DarkWitch`, which is Night Witch and already in as `night_witch`). A ranged attacker
   whose hits **curse** the enemy; a cursed enemy that dies spawns a small "pig"/hog **for the
   Mother Witch's owner** (side-flips the kill). The prior pass deferred this because the curse
@@ -42,6 +42,21 @@ items open. This round closes them. Same discipline as before.
   tables (WitchMother + its spawn/curse objects). Add `mother_witch` (+ the summon-only pig
   unit). Acceptance: a test where an enemy hit by Mother Witch then killed spawns the pig on
   HER side; an un-cursed death does not; determinism guard.
+  DONE (`characters/witchmother.toml`, L11 = round(base×2.56)): added `mother_witch`
+  (WitchMother, Legendary, 4 elixir: hp 530, dmg 133, hit 1.0s, load 0.7s, range 5.5,
+  targets both, homing proj speed 6.0 = Speed/100) and the summon-only `voodoo_hog`
+  (VoodooHog pig: hp 630, dmg 54, hit 1.2s, range 0.75, speed 2.0, ground, buildings-only,
+  jumps river, `deployable:false`). The attack's VoodooProjectile carries the curse: on a
+  troop hit (IgnoreBuildings → never a tower/building) it tags the victim via the existing
+  `curse`/`curse_spawn` entity state (new `curse_on_hit` 5.0s + `curse_spawn:"voodoo_hog"`
+  on the card; new `Projectile.curse_ticks`/`curse_spawn` + `curse_add`/`curse_src`
+  accumulators through `step_projectiles`/`proj_impact`/`apply_damage`). The cursed unit's
+  later death reuses the shared DeathSpawnIsEnemy transform (`curse_spawns.push((1-owner,…))`)
+  → exactly one pig (DeathSpawnCount 1) for the Mother Witch's owner. No new stateful
+  subsystem: the curse tick-down + death-spawn are the Goblin Curse path. Tests:
+  `cursed_death_spawns_pig_for_mother_witch`, `uncursed_death_spawns_no_pig`,
+  `voodoo_hog_is_summon_only_building_targeter`, `mother_witch_curse_is_deterministic`.
+  `cargo test --release`: 51/51 pass. Commit: c5a43ae
 - [ ] **R2 — Goblinstein.** Internal `goblinstein` (mana 5 Champion). It deploys as **two
   linked parts** — the big melee **Monster** + the small **Doctor** that periodically zaps /
   revives. Model the champion-pet pairing (e.g. the champion's deploy also spawns its pet via
