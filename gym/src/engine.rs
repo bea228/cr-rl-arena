@@ -990,6 +990,59 @@ impl Engine {
         self.apply_pull_movement();
     }
 
+    /// [heal] Battle Healer aura: every `heal_aura_interval` ticks, each alive healer
+    /// restores `heal_aura_power` hp to friendly troops (itself included) within
+    /// `heal_aura_radius`. Buildings/towers are not healed (CR's `no_buildings`
+    /// filter). The aura is re-anchored to the healer each pulse, so it tracks her
+    /// as she moves. Deterministic: healers snapshotted in index order, then applied.
+    fn apply_heal_auras(&mut self) {
+        let healers: Vec<(V2, u8, i32, Fx, i32)> = self
+            .entities
+            .iter()
+            .filter_map(|e| {
+                // must be a fully-deployed, living healer (a healer dying this tick must
+                // not resurrect itself or keep healing via its own aura).
+                if !e.alive() || e.deploy > 0 {
+                    return None;
+                }
+                let d = &self.lib.defs[e.def];
+                if d.heal_aura_power <= 0 {
+                    return None;
+                }
+                Some((e.pos, e.owner, d.heal_aura_power, d.heal_aura_radius, d.heal_aura_interval.max(1)))
+            })
+            .collect();
+        if healers.is_empty() {
+            return;
+        }
+        // which entities are heal-eligible (friendly troops, no buildings/towers)
+        let is_troop: Vec<bool> =
+            self.entities.iter().map(|e| self.lib.defs[e.def].ctype == CardType::Troop).collect();
+        for (pos, owner, power, radius, interval) in healers {
+            if self.tick % interval as i64 != 0 {
+                continue; // this healer does not pulse this tick
+            }
+            let r2 = radius.mul(radius);
+            for idx in 0..self.entities.len() {
+                if !is_troop[idx] {
+                    continue;
+                }
+                let e = &self.entities[idx];
+                // heal only living, not-full friendly troops (never resurrect hp<=0).
+                if !e.alive() || e.owner != owner || e.hp >= e.max_hp {
+                    continue;
+                }
+                let dx = e.pos.x - pos.x;
+                let dy = e.pos.y - pos.y;
+                if dx.mul(dx) + dy.mul(dy) > r2 {
+                    continue;
+                }
+                let healed = (self.entities[idx].hp + power).min(self.entities[idx].max_hp);
+                self.entities[idx].hp = healed;
+            }
+        }
+    }
+
     /// [kb] Drag enemies toward every active `Pull` area effect's center. Snapshot-free
     /// but deterministic: entities are visited in index order and each reads only its
     /// own prior position. Towers/buildings are anchored (immune); heavier troops are
@@ -1193,6 +1246,8 @@ impl Engine {
 
         // 2c. lingering area effects (poison/rage/heal zones)
         self.apply_area_effects();
+        // [heal] continuous heal auras (Battle Healer): re-anchored to each healer.
+        self.apply_heal_auras();
 
         let n = self.entities.len();
         let snap = Snap::build(&self.entities, &self.lib);
@@ -3776,5 +3831,89 @@ mod shot_tests {
             }
         }
         panic!("firecracker never fired");
+    }
+}
+
+// [heal] A3: Battle Healer continuous heal aura.
+#[cfg(test)]
+mod heal_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    #[test]
+    fn battle_healer_heals_nearby_ally_and_self() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bh = eng.lib.id_of("battle_healer").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, bh, at(9.0, 8.0));
+        let bh_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(0, knight, at(9.6, 8.4)); // ally ~0.7 away (inside the 3.0 aura)
+        let ally_id = eng.entities.last().unwrap().id;
+        // a far-away ally that should NOT be reached by the aura
+        eng.spawn_unit(0, knight, at(9.0, 14.0));
+        let far_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        // wound everyone to half hp
+        for e in eng.entities.iter_mut() {
+            e.hp = e.max_hp / 2;
+        }
+        let hp_of = |eng: &Engine, id: u32| eng.entities.iter().find(|e| e.id == id).unwrap().hp;
+        let ally0 = hp_of(&eng, ally_id);
+        let self0 = hp_of(&eng, bh_id);
+        let far0 = hp_of(&eng, far_id);
+
+        for _ in 0..40 {
+            eng.step(noop());
+        }
+
+        let ally1 = hp_of(&eng, ally_id);
+        let self1 = hp_of(&eng, bh_id);
+        let far1 = hp_of(&eng, far_id);
+        assert!(ally1 > ally0, "nearby ally heals over time: {ally0} -> {ally1}");
+        assert!(self1 > self0, "the healer heals herself: {self0} -> {self1}");
+        assert_eq!(far1, far0, "an ally outside the radius is not healed");
+        let ally_max = eng.entities.iter().find(|e| e.id == ally_id).unwrap().max_hp;
+        assert!(ally1 <= ally_max, "heal never overshoots max hp");
+    }
+
+    // The aura stops the moment the healer dies.
+    #[test]
+    fn heal_aura_stops_when_healer_dies() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bh = eng.lib.id_of("battle_healer").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, bh, at(9.0, 8.0));
+        let bh_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(0, knight, at(9.5, 8.0));
+        let ally_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+            if e.id == ally_id {
+                e.hp = e.max_hp / 2;
+            }
+        }
+        // kill the healer, then step: the ally must not keep healing
+        for e in eng.entities.iter_mut() {
+            if e.id == bh_id {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop()); // healer is removed by the death pass
+        let before = eng.entities.iter().find(|e| e.id == ally_id).unwrap().hp;
+        for _ in 0..20 {
+            eng.step(noop());
+        }
+        let after = eng.entities.iter().find(|e| e.id == ally_id).unwrap().hp;
+        assert_eq!(after, before, "no healer => no heal");
     }
 }

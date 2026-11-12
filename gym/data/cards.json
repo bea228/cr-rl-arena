@@ -1765,7 +1765,12 @@
    "mass": 0.6,
    "sight": 5.5,
    "deploy_time": 1.0,
-   "targets": "ground"
+   "targets": "ground",
+   "heal_aura": {
+    "power": 26,
+    "radius": 3.0,
+    "interval": 0.25
+   }
   },
   "minion_giant": {
    "elixir": 4,

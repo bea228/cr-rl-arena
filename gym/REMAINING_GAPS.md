@@ -67,11 +67,20 @@ not implemented.
   (away from target, river/bounds-respected) once per shot. Tests:
   `hunter_shotgun_falloff_is_monotonic`, `hunter_fires_bigger_burst_point_blank_than_far`,
   `firecracker_recoils_backward_on_firing`. `cargo test --release`: 32/32 pass. Commit: c362471
-- [ ] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
+- [x] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
   (and herself) in a radius. Model it (reuse the area-effect/heal system — see `Heal`
   `SpellEffect` and `apply_area_effects`). Acceptance: allies in her radius regain hp over
   time; a test asserts a damaged nearby ally heals while she's alive. Pull heal rate/radius
   from the decoded data.
+  DONE: new `heal_aura{power,radius,interval}` card field + `Engine::apply_heal_auras`
+  (re-anchored to the healer each pulse so it tracks her movement). battle_healer heals
+  friendly TROOPS (incl. self, no buildings/towers — CR `friendly_troop_no_buildings`)
+  within radius 3.0 (`BattleHealerAll` AEO Radius 3000) by 26 hp every 0.25s (HitFrequency
+  250) = ~104/s ≈ the L11 HealPerSecond (40 base ×2.56 = 102). Filters on `alive()` so a
+  healer dying this tick can't self-resurrect via its own aura (caught + fixed by the
+  second test). Tests: `battle_healer_heals_nearby_ally_and_self` (incl. a far ally that is
+  NOT healed), `heal_aura_stops_when_healer_dies`. `cargo test --release`: 34/34 pass.
+  Commit: __PENDING__
 - [ ] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
   types in one card (Goblin Gang = 3 stab goblins + 3 spear goblins; Rascals = 1 Rascal Boy
   tank + 2 Rascal Girls ranged). The engine spawns `count` of ONE def. Add a

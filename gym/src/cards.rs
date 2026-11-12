@@ -144,6 +144,11 @@ pub struct CardDef {
     pub pellets: i32,
     // [shot] Firecracker self-recoil (tiles) applied to the shooter each time it fires.
     pub recoil: Fx,
+    // [heal] Battle Healer aura: heal `power` hp to friendly troops (incl. self) within
+    // `heal_aura_radius` every `heal_aura_interval` ticks. power 0 = no aura.
+    pub heal_aura_power: i32,
+    pub heal_aura_radius: Fx,
+    pub heal_aura_interval: i32,
     pub charge: Option<Charge>,
     // [charge] Dash / jump (leap) variants: Bandit dash, Mega Knight jump.
     pub dash_min: Fx,            // target must be at least this far to trigger a leap
@@ -290,6 +295,15 @@ struct RawSpawn {
     interval: Option<f64>,
 }
 
+// [heal] Battle Healer continuous heal aura: heals friendly troops (incl. self)
+// within `radius` by `power` hp every `interval` seconds while alive.
+#[derive(Deserialize, Default)]
+struct RawHealAura {
+    power: Option<i64>,
+    radius: Option<f64>,
+    interval: Option<f64>, // seconds between heal pulses
+}
+
 #[derive(Deserialize, Default)]
 struct RawDeath {
     card: String,
@@ -353,6 +367,8 @@ struct RawCard {
     pellets: Option<i64>,
     // [shot] Firecracker: self-recoil distance (tiles) the shooter jumps backward on firing.
     recoil: Option<f64>,
+    // [heal] Battle Healer continuous heal aura.
+    heal_aura: Option<RawHealAura>,
     charge: Option<RawCharge>,
     // [charge] new mechanic inputs (all optional -> existing cards still load)
     // (melee knockback reuses the shared [kb] `knockback` JSON key above)
@@ -509,6 +525,15 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         roll_range: Fx::from_f64(r.roll_range.unwrap_or(0.0)), // [kb]
         pellets: r.pellets.unwrap_or(1).max(1) as i32,         // [shot]
         recoil: Fx::from_f64(r.recoil.unwrap_or(0.0)),         // [shot]
+        // [heal] Battle Healer aura (default power 0 => every other card unaffected)
+        heal_aura_power: r.heal_aura.as_ref().and_then(|h| h.power).unwrap_or(0) as i32,
+        heal_aura_radius: Fx::from_f64(r.heal_aura.as_ref().and_then(|h| h.radius).unwrap_or(0.0)),
+        heal_aura_interval: r
+            .heal_aura
+            .as_ref()
+            .and_then(|h| h.interval)
+            .map(secs_to_ticks)
+            .unwrap_or(TICKS_PER_SECOND as i32 / 4),
         charge,
         // [charge] new mechanic fields
         dash_min,
