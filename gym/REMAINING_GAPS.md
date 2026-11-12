@@ -97,7 +97,7 @@ not implemented.
   spawns one entity per call, ignoring that def's own count). Tests:
   `goblin_gang_deploys_three_stab_plus_three_spear`, `rascals_deploys_one_boy_plus_two_girls`,
   `mix_card_deck_legality`, `mixed_deploy_is_deterministic`. `cargo test --release`: 38/38
-  pass. Commit: __PENDING__
+  pass. Commit: e4b43a1
 - [ ] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
   acquisition toward CR's real rules where the data supports it: correct retarget timing,
   and not dropping a committed target prematurely. Keep it deterministic (nearest valid;
