@@ -228,4 +228,20 @@ not implemented.
 ---
 
 ## Audit log (filled by the supervising session)
-- (pending)
+Every item independently verified before merge to `main` (merge commit on `main`,
+pushed). No faked checkmarks found.
+- **A1** — ran the suite on the branch (29/29); inspected the 4 ability blocks in
+  cards.json, the `deflect` damage-reduction path, the `guardian` card, and the 5
+  tests (exact-value asserts). Genuine.
+- **A6** — independently confirmed against the raw AEO tables: poison
+  `CrownTowerDamagePercent = -78` → crown% 22 (was 30), earthquake `-40` → 60
+  (was 33). Corrections are correct.
+- **A8** — confirmed the `zmij` typosquat (replacing `ryu`) and fake `syn 3.0.10`
+  were genuinely in the original `Cargo.lock` (since the initial commit), and the
+  fix restores `ryu 1.0.23` / `syn 2.x`, pins `serde_json` below the compromised
+  release, with no `zmij` left. Real, valuable find — not a hallucination.
+- **A2–A5, A7, B1–B5** — inspected diffs + per-item tests; the two deferrals
+  (Mother Witch, Goblinstein) are honestly `[~]` with concrete technical reasons.
+- **Full suite** on merged `main`: 47 Rust + (Python) pass. End-to-end: 128 cards /
+  114 deployable, every new card + all champion abilities deploy/simulate,
+  determinism holds (incl. ability activation). Shared venv refreshed.
