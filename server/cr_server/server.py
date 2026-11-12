@@ -12,6 +12,7 @@ Env:
     CR_ARENA_BIND        host:port         (default 0.0.0.0:8765)
     CR_ARENA_DATA        data dir          (default ./arena_data)
     CR_MOVE_TIMEOUT      seconds/decision  (default 1.0)
+    CR_DECISION_EVERY    ticks/decision    (default 4 => 5 Hz; core tick stays 20 Hz)
 
 Protocol (JSON text frames)
   C->S  {"t":"join","name":str,"deck":[8 card names]|null}
@@ -123,7 +124,10 @@ class Arena:
             await a.send({"t": "start", "player": 0, "opponent": b.name, "seed": seed})
             await b.send({"t": "start", "player": 1, "opponent": a.name, "seed": seed})
 
-            res = await match.run_match(cr_sim, a, b, seed=seed, move_timeout=MOVE_TIMEOUT)
+            res = await match.run_match(
+                cr_sim, a, b, seed=seed,
+                move_timeout=MOVE_TIMEOUT, decision_every=match.DECISION_EVERY,
+            )
             out = res["outcome"]
             # forfeit: a disconnected agent loses to a connected one
             if not a.alive and b.alive:
