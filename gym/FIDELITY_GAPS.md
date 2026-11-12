@@ -214,10 +214,46 @@ The spell system is **instant area damage + optional stun only**
 
 ## 12. Stat accuracy
 
-- `[SIMPLIFIED]` **M — Card numbers are hand-entered level-11 values** believed
-  close but **not verified** against the decoded data tables. HP/damage are likely
-  near; **hit speeds, ranges, and projectile speeds are the most likely to be off**.
-  `gym/data/cards.json` is the single source to correct for exact parity.
+- `[RESOLVED 2026-11-12]` **Card stats reconciled against the decoded `csv_logic`
+  tables.** Every card's HP, damage, hit speed, load time, range, speed, mass,
+  collision radius, sight, deploy time, targeting (incl. buildings-only), flying,
+  spawn count, elixir, and splash radius are now taken straight from the decoded
+  character/projectile/area-effect TOMLs; spell damage, radius, and crown-tower
+  damage from their projectile/AEO defs. 79/85 cards updated (522 field changes).
+  - **Level-11 scaling** uses the authoritative `rarities.csv` `PowerLevelMultiplier`
+    table: level 1 = base, **level 11 (tournament standard) = round(base × 2.56)**
+    (the 256% entry, identical across rarities). Verified against known values —
+    Fireball 269→689, Lightning 413→1057, P.E.K.K.A 1469→3761, Golem 2000→5120.
+  - Spell crown-tower damage is now per-spell (`crown_pct` = 100 + the file's
+    `CrownTowerDamagePercent`, e.g. Fireball 23, Zap 25, Log 13) rather than a flat
+    placeholder; Zap/Freeze read their `{BaseDamage,TowerDamage}` structs directly.
+
+- `[RESOLVED 2026-11-12, follow-up pass]` the four caveats from the first pass are closed:
+  1. **Magic Archer** was found in the decoded data under its dev name `EliteArcher`
+     (`BlueExportName = "magic_archer"`): base HP 207→**530**, dmg 53→**136** — now exact.
+  2. **Towers** reconciled to authoritative tournament-standard values: Princess
+     **2534 HP / 90 dmg**, King **4008 HP / 90 dmg** (both tower damage was wrongly 109;
+     the first pass's ×1.81 King-HP extrapolation to 4344 was wrong — real is 4008). Real
+     building collision radii applied (Princess 1.0, King 1.4). No per-level tower table
+     exists in the data (only +8%/level king-level constants, which are approximations).
+  3. **Per-level rounding** proven to be **round-half-up, one step from the level-1 base**
+     (`(base×256+50)/100`), discriminated against floor (Fireball 688.64→689) and ceil
+     (Knight 690→1766 not 1767); the "≤1 diff" was stale web data, not a rounding error —
+     existing values were already exact, 0 cards changed.
+  4. **Mechanic sub-stats** re-derived from the tables (20 corrections): shields
+     (guards 256, dark_prince 241), Inferno ramp stages (tower [44,159,847] @2.0s,
+     dragon [36,120,422]), charge/dash (battle_ram/ram_rider speed ×2.0, bandit dash 6.0,
+     mega_knight land radius 2.2, ram_rider snare 2.0s), buff durations (rage 4.5s,
+     freeze 3.5s, snowball slow 3.0s, poison 92 dps, ice_spirit freeze 1.1s, ice_wizard
+     slow 2.5s), electro_giant reflect radius 2.0, witch spawn count 4, goblin_hut spawn
+     interval 2.2s. A few leaves were deliberately left (evo_knight uses a 60%
+     damage-reduction buff not a flat shield; mega_knight has distinct jump-vs-deploy
+     land damage the single field can't hold) — see the stat-fix report.
+
+- **Separately** (correctness, not a stat): fixed a crown-accounting bug where destroying
+  the King tower stacked its 3 crowns on top of princess-tower crowns (could reach 4).
+  King death now sets the total to 3; princess crowns cap at 3. Regression test
+  `king_tower_kill_caps_crowns_at_three`; verified ≤3 across 40 seeds.
 
 ## 13. Interface / observability caveats (sim design, not CR mechanics)
 
@@ -250,7 +286,8 @@ The spell system is **instant area damage + optional stun only**
    knockback / pull, so most spells and control cards become expressible (§4).
 4. **Death-spawns & spawner buildings** (§3) — unlocks a large slice of the roster.
 5. **Mass-weighted push** (§6) and **building-aware pathfinding** (§5).
-6. **Verify stats** against authoritative tables (§12).
+6. ~~**Verify stats** against authoritative tables (§12).~~ **Done 2026-11-12** —
+   all card/tower stats reconciled against the decoded `csv_logic` tables.
 
 None of these block the hackathon: the current engine is a coherent, deterministic
 RTS. They are what it would take to approach real-CR parity.

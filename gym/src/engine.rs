@@ -1949,13 +1949,22 @@ impl Engine {
             }
             self.entities[i].dead = true;
             if is_tower {
-                self.crowns[1 - owner] += cv;
-                // ...or when one of its PRINCESS towers is destroyed (not merely chipped).
-                if !is_king {
+                if is_king {
+                    // [crown] Destroying the enemy KING tower is an instant win worth
+                    // the full 3 crowns TOTAL. It does NOT add `cv` (=3) on top of the
+                    // crowns already earned from that side's princess towers -- doing so
+                    // let a player's total exceed the hard cap of 3 (e.g. 1 princess + king
+                    // reported as 4). Set the total to the win value instead of adding.
+                    self.crowns[1 - owner] = 3;
+                    if self.outcome == Outcome::Running {
+                        self.outcome = if owner == 0 { Outcome::Win1 } else { Outcome::Win0 };
+                    }
+                } else {
+                    // A destroyed PRINCESS (arena) tower is 1 crown; clamp to the [0,3]
+                    // cap defensively so crowns can never exceed 3.
+                    self.crowns[1 - owner] = (self.crowns[1 - owner] + cv).min(3);
+                    // ...destroying a princess tower also wakes the loser's king tower.
                     activate[owner] = true;
-                }
-                if is_king && self.outcome == Outcome::Running {
-                    self.outcome = if owner == 0 { Outcome::Win1 } else { Outcome::Win0 };
                 }
             }
         }
@@ -2612,7 +2621,10 @@ mod rev_tests {
         eng.step([Action::noop(), Action::noop()]);
         assert_eq!(count_def(&eng, "phoenix_egg"), 1);
         assert!(eng.entities.iter().all(|e| !e.revived));
-        // let the egg's 3.0s lifetime expire -> hatch reborn phoenix at 60% hp (720)
+        // let the egg's 3.0s lifetime expire -> hatch reborn phoenix at revive_hp_pct% hp
+        // (derive the expected hp from the card data so stat edits don't break this test)
+        let egg_id = eng.lib.id_of("phoenix_egg").unwrap();
+        let expect_hp = eng.lib.defs[pid].hp * eng.lib.defs[egg_id].revive_hp_pct / 100;
         for _ in 0..65 {
             eng.step([Action::noop(), Action::noop()]);
         }
@@ -2620,8 +2632,8 @@ mod rev_tests {
         let reborn: Vec<&Entity> = eng.entities.iter().filter(|e| e.def == pid).collect();
         assert_eq!(reborn.len(), 1);
         assert!(reborn[0].revived);
-        assert_eq!(reborn[0].hp, 720);
-        assert_eq!(reborn[0].max_hp, 720);
+        assert_eq!(reborn[0].hp, expect_hp);
+        assert_eq!(reborn[0].max_hp, expect_hp);
         // reborn is one-shot: on death it leaves NO egg and does not revive
         kill_all(&mut eng);
         eng.step([Action::noop(), Action::noop()]);
@@ -2642,6 +2654,42 @@ mod rev_tests {
         eng.step([Action::noop(), Action::noop()]);
         assert_eq!(count_def(&eng, "phoenix"), 0);
         assert_eq!(eng.entities.len(), 0);
+    }
+
+    // [crown] Regression test for the ">3 crowns" bug. Destroying one enemy
+    // PRINCESS tower is 1 crown; then destroying the enemy KING tower is an
+    // instant win worth the FULL 3 crowns TOTAL -- it must NOT stack +3 on top
+    // of the princess crown (which produced an impossible total of 4). The
+    // winner ends on exactly 3 and the loser's crowns are untouched.
+    #[test]
+    fn king_tower_kill_caps_crowns_at_three() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None); // spawn the four towers per side
+
+        // Kill one of player 1's PRINCESS towers -> player 0 earns 1 crown.
+        let pidx = eng
+            .entities
+            .iter()
+            .position(|e| e.is_tower && !e.is_king && e.owner == 1)
+            .expect("player 1 princess tower");
+        eng.entities[pidx].hp = 0;
+        eng.step([Action::noop(), Action::noop()]);
+        assert_eq!(eng.crowns, [1, 0], "one princess tower = exactly 1 crown");
+        assert_eq!(eng.outcome, Outcome::Running);
+
+        // Now kill player 1's KING tower -> instant win at the full 3 crowns
+        // TOTAL, never 1 + 3 = 4.
+        let kidx = eng
+            .entities
+            .iter()
+            .position(|e| e.is_tower && e.is_king && e.owner == 1)
+            .expect("player 1 king tower");
+        eng.entities[kidx].hp = 0;
+        eng.step([Action::noop(), Action::noop()]);
+
+        assert_eq!(eng.crowns[0], 3, "king kill caps the winner at 3 crowns, not 4");
+        assert_eq!(eng.crowns[1], 0, "loser's crowns stay unchanged");
+        assert_eq!(eng.outcome, Outcome::Win0);
     }
 }
 
