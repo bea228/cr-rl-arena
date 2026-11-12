@@ -11,8 +11,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# [A8] Upper bounds pin BELOW the supply-chain-compromised releases: serde_json
+# >=1.0.147 was poisoned to depend on the `zmij` typosquat (replacing `ryu`), and
+# serde_derive 1.0.229 (pulled by serde 1.0.229) on a fake `syn ^3` (replacing syn 2).
+# 1.0.228 / 1.0.146 are the last clean releases using the legitimate ryu + syn 2.x.
+serde = { version = ">=1.0.200, <1.0.229", features = ["derive"] }
+serde_json = ">=1.0.100, <1.0.147"
 
 [profile.release]
 opt-level = 3

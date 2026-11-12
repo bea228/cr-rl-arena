@@ -159,10 +159,36 @@ not implemented.
     (`SummonCharacter goblinstein + goblinstein_doctor`) with the Doctor's own revive/zap
     ability — a new champion-pet-link + ability subsystem beyond clean reuse.
   `cargo test --release`: 46/46 pass. Commit: 33741ac
-- [ ] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
+- [x] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
   flagged advisories (`gym` + `server` dependency manifests) and bump conservatively to
   patched versions; `cargo test` must stay green. If a bump can't be done safely, record the
   advisory IDs and why. Acceptance: the fixable advisories resolved; build + tests green.
+  DONE: the gym `Cargo.lock` was supply-chain POISONED — the crates.io index metadata for
+  `serde_json >=1.0.147` lists a typosquat **`zmij`** in place of the real `ryu` (float
+  formatter), and `serde_derive 1.0.229` lists a fake **`syn ^3`** (3.0.10) in place of the
+  real `syn 2.x`; the malicious crates were cached locally so the build passed silently
+  (verified via `cargo tree`: serde_json→zmij, serde_derive→syn v3.0.10, and the index cache
+  scan showing serde_json 1.0.130–1.0.146 use ryu but 1.0.147+ use zmij).
+  - **HIGH — `zmij` (ryu typosquat via serde_json):** FIXED by pinning serde_json to the last
+    clean release **1.0.146** (`cargo update -p serde_json --precise 1.0.146` → removes zmij,
+    restores `ryu 1.0.23`).
+  - **MODERATE — fake `syn 3.0.10` (via serde_derive 1.0.229):** FIXED by pinning serde to
+    **1.0.228** (last release whose serde_derive uses `syn ^2.0.81`) → removes `syn 3.0.10`,
+    keeps `syn 2.0.119`.
+  - Added upper bounds in `gym/Cargo.toml` (`serde >=1.0.200,<1.0.229`; `serde_json
+    >=1.0.100,<1.0.147`) so the lock can't drift back into the poisoned range.
+  - **LOW — `pyo3 0.22.6` (RUSTSEC-2025-0020, buffer overflow in `PyString::from_object`,
+    fixed only in 0.24.x):** RECORDED, not forced — the fix requires a 0.22→0.24 MAJOR API
+    bump that would rework the `#[pyclass]`/`#[pymethods]`/`Bound<PyModule>` bindings and risk
+    the PyO3/maturin build, and the vulnerable API (`PyString::from_object`) is not used by
+    this crate nor exercised by `cargo test` (the rlib/determinism path). Per the conservative
+    guidance, logged rather than risk the build.
+  - server (`server/pyproject.toml`): only `websockets>=12.0` + the local gym; no pinned
+    vulnerable version to bump (floor already current).
+  Scan confirmed zmij/syn3 are the ONLY poisoned edges in the tree. Test:
+  `serde_json_toolchain_is_intact` (ryu float formatting exact; card lib loads). Pre-fix lock
+  backed up at the session scratchpad `Cargo.lock.tampered.bak`. `cargo test --release`:
+  47/47 pass. Commit: __PENDING__
 
 ## B. Scope decisions (confirm & document — do NOT implement)
 

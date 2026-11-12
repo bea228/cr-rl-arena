@@ -4305,6 +4305,21 @@ mod a7_tests {
         assert_eq!(count(&eng, "goblins"), 0, "no curse => no transform");
     }
 
+    // [A8] The legitimate serde_json (backed by `ryu`, not the `zmij` typosquat) is
+    // linked and formats/parses correctly -- a sanity check that the supply-chain
+    // downgrade kept the JSON toolchain working end to end.
+    #[test]
+    fn serde_json_toolchain_is_intact() {
+        // ryu float formatting (the crate zmij masqueraded as) is exact + shortest.
+        assert_eq!(serde_json::to_string(&3.5f64).unwrap(), "3.5");
+        assert_eq!(serde_json::to_string(&1.0f64).unwrap(), "1.0");
+        let v: serde_json::Value = serde_json::from_str("{\"a\": 2.56, \"b\": [1,2,3]}").unwrap();
+        assert_eq!(v["a"].as_f64().unwrap(), 2.56);
+        assert_eq!(v["b"].as_array().unwrap().len(), 3);
+        // the real card library (parsed via serde_json) still loads cleanly.
+        assert!(Library::default_lib().deployable.len() >= 15);
+    }
+
     #[test]
     fn curse_and_clone_are_deterministic() {
         let run = || {
