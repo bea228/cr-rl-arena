@@ -57,7 +57,7 @@ items open. This round closes them. Same discipline as before.
   `cursed_death_spawns_pig_for_mother_witch`, `uncursed_death_spawns_no_pig`,
   `voodoo_hog_is_summon_only_building_targeter`, `mother_witch_curse_is_deterministic`.
   `cargo test --release`: 51/51 pass. Commit: c5a43ae
-- [ ] **R2 — Goblinstein.** Internal `goblinstein` (mana 5 Champion). It deploys as **two
+- [x] **R2 — Goblinstein.** Internal `goblinstein` (mana 5 Champion). It deploys as **two
   linked parts** — the big melee **Monster** + the small **Doctor** that periodically zaps /
   revives. Model the champion-pet pairing (e.g. the champion's deploy also spawns its pet via
   the existing deploy-spawn/summon path), each with real stats, and wire its activated
@@ -67,6 +67,30 @@ items open. This round closes them. Same discipline as before.
   one-champion-per-deck still enforced; a test verifies the pairing; determinism guard. If the
   Doctor's revive/zap needs a genuinely new subsystem beyond reasonable scope, implement the
   pairing + combat faithfully and mark the specific sub-mechanic `[~]` with the reason.
+  DONE (`characters/goblinstein.toml` + `spells_characters.csv`, L11 = round(base×2.56)).
+  The spell row (`Champion`, mana 5, `IsAGroup`) deploys `SummonCharacter goblinstein` (×1,
+  primary = the Monster) + `SummonCharacterSecond goblinstein_doctor` (×1). Added:
+  - `goblinstein` (the Monster = deck-legal champion body, `champion:true`, 5 elixir): hp 2240,
+    dmg 128, hit 1.5s, load 0.7s, range 1.2, mass 1.8, speed 1.0, sight 7.5, ground,
+    buildings-only melee. Pairing via `deploy_spawn:{goblinstein_doctor, 1}` (existing mixed-
+    deploy path → both parts spawn on the owner's side).
+  - `goblinstein_doctor` (summon-only, `deployable:false`): hp 722, dmg 136 (prj 53), hit 1.8s,
+    load 1.3s, range 5.5, targets both, homing proj speed 5.0 (Speed/100), `on_hit_freeze 0.5s`
+    = the real `buff_goblinstein_doctor` zap-freeze (Speed & HitSpeed −100% for BuffTime 500ms).
+  One-champion-per-deck unchanged (the env rule counts `is_champion`; tested that Goblinstein +
+  a second champion = 2 → illegal). The Doctor's **zap is its normal ranged attack** (freeze
+  projectile, tested). `[~]` DEFERRED sub-mechanic — the **tether/revive activated ability**
+  (`[ABILITY.goblinstein_ability]` → `ActionGoblinsteinAbility`: a 3.5s beam tethering Doctor↔
+  Monster, `TetherDamage 37` every 0.5s over `TetherWidth 2.0`, plus `DeathAreaEffectData=
+  dead_goblinstein` reviving the dead Monster): a genuinely new linked-beam + revive subsystem
+  with no analog in the current `AbilityKind` set (cloak/summon/dash/lanebomb/deflect/warp), and
+  its numeric `ability_cooldown` is a named stat with no resolved value in the decoded tables
+  (same gap as R3). Modeling it would require inventing mechanics, so the card carries no
+  `ability` block; a champion with `AbilityKind::None` is handled safely (activate_ability /
+  champion_status skip it). Tests: `goblinstein_deploys_monster_plus_doctor`,
+  `goblinstein_is_champion_doctor_is_summon_only`, `two_champions_including_goblinstein_is_illegal`,
+  `doctor_zap_freezes_the_enemy_it_hits`, `goblinstein_pairing_is_deterministic`.
+  `cargo test --release`: 56/56 pass. Commit: 4579925
 - [ ] **R3 — Real champion ability cooldowns.** A1 left Mighty Miner / Monk / Little Prince
   cooldowns as approximations because the CSV `AbilityCooldown` column was empty. Dig deeper —
   check `actions.toml`, the `[ABILITY.*]`/`[ACTION.*]` blocks in each champion's TOML, and any
