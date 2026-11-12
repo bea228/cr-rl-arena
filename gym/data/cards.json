@@ -1376,7 +1376,7 @@
    "type": "spell",
    "damage": 0,
    "radius": 3.5,
-   "crown_tower_damage_pct": 30,
+   "crown_tower_damage_pct": 22,
    "targets": "both",
    "effect": "poison",
    "effect_duration": 8.0,
@@ -1593,7 +1593,8 @@
    "sight": 5.5,
    "deploy_time": 1.0,
    "targets": "both",
-   "projectile_speed": 6.0
+   "projectile_speed": 6.0,
+   "pellets": 10
   },
   "royal_recruits": {
    "elixir": 7,
@@ -1707,7 +1708,8 @@
    "targets": "both",
    "splash_radius": 1.0,
    "projectile_speed": 5.0,
-   "knockback": 1.0
+   "knockback": 1.0,
+   "recoil": 1.0
   },
   "skeleton_barrel": {
    "elixir": 3,
@@ -1763,7 +1765,12 @@
    "mass": 0.6,
    "sight": 5.5,
    "deploy_time": 1.0,
-   "targets": "ground"
+   "targets": "ground",
+   "heal_aura": {
+    "power": 26,
+    "radius": 3.0,
+    "interval": 0.25
+   }
   },
   "minion_giant": {
    "elixir": 4,
@@ -1871,7 +1878,15 @@
     174,
     691
    ],
-   "ramp_stage_time": 1.0
+   "ramp_stage_time": 1.0,
+   "ability": {
+    "kind": "lanebomb",
+    "cost": 1,
+    "cooldown": 3.5,
+    "damage": 333,
+    "radius": 3.0,
+    "knockback": 1.8
+   }
   },
   "monk": {
    "elixir": 5,
@@ -1887,7 +1902,14 @@
    "sight": 5.5,
    "deploy_time": 1.0,
    "targets": "ground",
-   "champion": true
+   "champion": true,
+   "ability": {
+    "kind": "deflect",
+    "cost": 1,
+    "cooldown": 12.0,
+    "duration": 4.0,
+    "reduction": 65
+   }
   },
   "little_prince": {
    "elixir": 3,
@@ -1904,7 +1926,15 @@
    "deploy_time": 1.0,
    "targets": "both",
    "champion": true,
-   "projectile_speed": 6.0
+   "projectile_speed": 6.0,
+   "ability": {
+    "kind": "summon",
+    "cost": 3,
+    "cooldown": 20.0,
+    "count": 1,
+    "summon": "guardian",
+    "radius": 1.0
+   }
   },
   "boss_bandit": {
    "elixir": 6,
@@ -1927,7 +1957,141 @@
     "speed": 10.0,
     "damage_mult": 2,
     "invuln": true
+   },
+   "ability": {
+    "kind": "warp",
+    "cost": 1,
+    "cooldown": 3.0,
+    "duration": 1.0,
+    "range": 6.0
    }
+  },
+  "guardian": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 1600,
+   "damage": 233,
+   "hit_speed": 1.2,
+   "load_time": 0.7,
+   "range": 1.2,
+   "speed": 1.0,
+   "collision_radius": 0.8,
+   "mass": 1.0,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 0.3
+  },
+  "goblin_gang": {
+   "elixir": 3,
+   "type": "troop",
+   "count": 3,
+   "hp": 202,
+   "damage": 125,
+   "hit_speed": 1.1,
+   "load_time": 0.5,
+   "range": 0.5,
+   "speed": 2.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "deploy_spawn": {
+    "card": "spear_goblins",
+    "count": 3
+   }
+  },
+  "rascals": {
+   "elixir": 5,
+   "type": "troop",
+   "count": 1,
+   "hp": 1833,
+   "damage": 218,
+   "hit_speed": 1.5,
+   "load_time": 1.1,
+   "range": 0.8,
+   "speed": 1.0,
+   "collision_radius": 0.75,
+   "mass": 1.0,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "deploy_spawn": {
+    "card": "rascal_girl",
+    "count": 2
+   }
+  },
+  "rascal_girl": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 261,
+   "damage": 125,
+   "hit_speed": 1.0,
+   "load_time": 0.5,
+   "range": 5.0,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "both",
+   "projectile_speed": 9.0,
+   "deploy_time": 1.0
+  },
+  "clone": {
+   "elixir": 3,
+   "type": "spell",
+   "radius": 3.0,
+   "targets": "ground",
+   "effect": "clone"
+  },
+  "goblin_curse": {
+   "elixir": 2,
+   "type": "spell",
+   "radius": 3.0,
+   "crown_tower_damage_pct": 28,
+   "targets": "both",
+   "effect": "curse",
+   "effect_duration": 6.0,
+   "effect_interval": 1.0,
+   "effect_power": 36,
+   "curse_spawn": "goblins"
+  },
+  "suspicious_bush": {
+   "elixir": 2,
+   "type": "troop",
+   "hp": 82,
+   "damage": 0,
+   "hit_speed": 1.0,
+   "load_time": 1.0,
+   "range": 0.5,
+   "speed": 0.0,
+   "collision_radius": 0.5,
+   "mass": 0.3,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "death_spawn": {
+    "card": "bush_goblin",
+    "count": 2
+   }
+  },
+  "bush_goblin": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 338,
+   "damage": 256,
+   "hit_speed": 1.4,
+   "load_time": 1.1,
+   "range": 0.8,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 0.3
   },
   "bomb_tower": {
    "elixir": 4,
@@ -2060,7 +2224,7 @@
    "type": "spell",
    "damage": 0,
    "radius": 3.5,
-   "crown_tower_damage_pct": 33,
+   "crown_tower_damage_pct": 60,
    "targets": "ground",
    "effect": "poison",
    "effect_duration": 3.0,

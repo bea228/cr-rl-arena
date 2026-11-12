@@ -32,6 +32,8 @@ pub enum SpellEffect {
     Slow,    // area slow (enemies, duration)
     Tornado, // [kb] pull enemies toward center over a duration + small damage-over-time
     Spawn,   // [edep] periodically summon units over a radius (Graveyard)
+    Clone,   // [curse] duplicate friendly troops in radius at 1 hp (Clone spell)
+    Curse,   // [curse] curse enemies in radius: DoT + on-death transform into a unit for the caster
 }
 
 impl SpellEffect {
@@ -44,21 +46,31 @@ impl SpellEffect {
             "slow" => SpellEffect::Slow,
             "tornado" => SpellEffect::Tornado, // [kb]
             "spawn" => SpellEffect::Spawn, // [edep]
+            "clone" => SpellEffect::Clone, // [curse]
+            "curse" => SpellEffect::Curse, // [curse]
             _ => SpellEffect::None,
         }
     }
 }
 
 /// [champ] A champion's activatable ability, reusing existing engine systems.
-///   Cloak  — self becomes untargetable + gains a rage (attack/move) boost.
-///   Summon — spawns N of a unit (e.g. skeletons) around the champion.
-///   Dash   — teleports toward the nearest enemy, damaging a line of enemies.
+///   Cloak    — self becomes untargetable + gains a rage (attack/move) boost.
+///   Summon   — spawns N of a unit (e.g. skeletons/guardian) around the champion.
+///   Dash     — teleports toward the nearest enemy, damaging a line of enemies.
+///   LaneBomb — Mighty Miner: switch to the mirror lane and drop an area
+///              bomb (damage + knockback) at the vacated spot.
+///   Deflect  — Monk: a timed self damage-reduction window (projectile deflect).
+///   Warp     — Boss Bandit: warp a fixed distance toward the enemy side and
+///              turn briefly untargetable/invisible.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AbilityKind {
     None,
     Cloak,
     Summon,
     Dash,
+    LaneBomb,
+    Deflect,
+    Warp,
 }
 
 impl AbilityKind {
@@ -67,6 +79,9 @@ impl AbilityKind {
             "cloak" => AbilityKind::Cloak,
             "summon" => AbilityKind::Summon,
             "dash" => AbilityKind::Dash,
+            "lanebomb" => AbilityKind::LaneBomb,
+            "deflect" => AbilityKind::Deflect,
+            "warp" => AbilityKind::Warp,
             _ => AbilityKind::None,
         }
     }
@@ -128,6 +143,16 @@ pub struct CardDef {
     // [kb] knockback & pull
     pub knockback: Fx,   // [kb] push distance (tiles) this card's attack/spell impact applies
     pub roll_range: Fx,  // [kb] travel distance (tiles) of a rolling-line projectile (0 = not rolling)
+    // [shot] Hunter shotgun pellets: effective shot damage = per-hit x pellets-that-connect,
+    // which is `pellets` point-blank and falls to 1 at max range. 1 = ordinary single shot.
+    pub pellets: i32,
+    // [shot] Firecracker self-recoil (tiles) applied to the shooter each time it fires.
+    pub recoil: Fx,
+    // [heal] Battle Healer aura: heal `power` hp to friendly troops (incl. self) within
+    // `heal_aura_radius` every `heal_aura_interval` ticks. power 0 = no aura.
+    pub heal_aura_power: i32,
+    pub heal_aura_radius: Fx,
+    pub heal_aura_interval: i32,
     pub charge: Option<Charge>,
     // [charge] Dash / jump (leap) variants: Bandit dash, Mega Knight jump.
     pub dash_min: Fx,            // target must be at least this far to trigger a leap
@@ -162,6 +187,14 @@ pub struct CardDef {
     pub death_count: i32,
     pub death_name: Option<String>,
     pub death_id: Option<usize>,
+    // [mix] on DEPLOY, also spawn `deploy_spawn_count` of `deploy_spawn_name` beside the
+    // primary cluster -- for mixed-composition cards (Goblin Gang, Rascals). Linked name->id.
+    pub deploy_spawn_count: i32,
+    pub deploy_spawn_name: Option<String>,
+    pub deploy_spawn_id: Option<usize>,
+    // [curse] Goblin Curse: the unit a cursed enemy becomes (for the caster) when it dies.
+    pub curse_spawn_name: Option<String>,
+    pub curse_spawn_id: Option<usize>,
     // [rev] revive-on-death: when this unit dies from lifetime expiry, hatch one
     // `revive_name`/`revive_as` at `revive_hp_pct`% of that card's hp, exactly once
     // (used by the Phoenix egg -> reborn Phoenix). Linked name->id in the post-load pass.
@@ -226,8 +259,10 @@ pub struct CardDef {
     pub ability_duration_ticks: i32, // Cloak: untargetable/boost duration
     pub ability_damage: i32,         // Dash: damage per enemy in the line
     pub ability_count: i32,          // Summon: number of units spawned
-    pub ability_radius: Fx,          // Dash: line hit radius / Summon: spread
-    pub ability_range: Fx,           // Dash: max dash reach (tiles)
+    pub ability_radius: Fx,          // Dash: line hit radius / Summon: spread / LaneBomb: blast radius
+    pub ability_range: Fx,           // Dash: max dash reach / Warp: warp distance (tiles)
+    pub ability_knockback: Fx,       // LaneBomb: push distance applied to enemies in the blast
+    pub ability_reduction: i32,      // Deflect: % incoming-damage reduction while active (0-100)
     pub ability_spawn_name: Option<String>, // Summon: unit to spawn
     pub ability_spawn_id: Option<usize>,
     // [M2] explicit homing override; None = engine default (splash => commit-to-ground).
@@ -272,6 +307,15 @@ struct RawSpawn {
     interval: Option<f64>,
 }
 
+// [heal] Battle Healer continuous heal aura: heals friendly troops (incl. self)
+// within `radius` by `power` hp every `interval` seconds while alive.
+#[derive(Deserialize, Default)]
+struct RawHealAura {
+    power: Option<i64>,
+    radius: Option<f64>,
+    interval: Option<f64>, // seconds between heal pulses
+}
+
 #[derive(Deserialize, Default)]
 struct RawDeath {
     card: String,
@@ -295,8 +339,10 @@ struct RawAbility {
     damage: Option<i64>,   // Dash
     count: Option<i64>,    // Summon
     summon: Option<String>,// Summon unit name
-    range: Option<f64>,    // Dash reach (tiles)
-    radius: Option<f64>,   // Dash line radius / Summon spread (tiles)
+    range: Option<f64>,    // Dash reach / Warp distance (tiles)
+    radius: Option<f64>,   // Dash line radius / Summon spread / LaneBomb blast radius (tiles)
+    knockback: Option<f64>,// LaneBomb pushback distance (tiles)
+    reduction: Option<i64>,// Deflect % damage reduction (0-100)
 }
 
 #[derive(Deserialize, Default)]
@@ -328,6 +374,13 @@ struct RawCard {
     knockback: Option<f64>,   // [kb] push distance in tiles
     pierce: Option<bool>,     // [kb] rolling-pierce attack/spell
     roll_range: Option<f64>,  // [kb] rolling-line travel distance in tiles
+    // [shot] Hunter shotgun: number of pellets fired per shot; effective damage
+    // scales with how many connect (all at point-blank, few at max range).
+    pellets: Option<i64>,
+    // [shot] Firecracker: self-recoil distance (tiles) the shooter jumps backward on firing.
+    recoil: Option<f64>,
+    // [heal] Battle Healer continuous heal aura.
+    heal_aura: Option<RawHealAura>,
     charge: Option<RawCharge>,
     // [charge] new mechanic inputs (all optional -> existing cards still load)
     // (melee knockback reuses the shared [kb] `knockback` JSON key above)
@@ -340,6 +393,8 @@ struct RawCard {
     shield: Option<i64>,
     spawn: Option<RawSpawn>,
     death_spawn: Option<RawDeath>,
+    deploy_spawn: Option<RawSpawn>, // [mix] secondary units spawned on deploy (reuses card/count)
+    curse_spawn: Option<String>,    // [curse] unit a cursed enemy becomes on death (Goblin Curse)
     revive: Option<RawRevive>, // [rev]
     death_damage: Option<i64>,  // [edep]
     death_radius: Option<f64>,  // [edep]
@@ -447,6 +502,9 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
             ),
             None => (AbilityKind::None, 0, 0, 0, 0, 1, Fx::from_f64(1.0), Fx(0), None),
         };
+    // [champ] extra ability params (LaneBomb knockback, Deflect reduction); 0 by default
+    let ab_knockback = Fx::from_f64(r.ability.as_ref().and_then(|a| a.knockback).unwrap_or(0.0));
+    let ab_reduction = r.ability.as_ref().and_then(|a| a.reduction).unwrap_or(0).clamp(0, 100) as i32;
     CardDef {
         name: name.to_string(),
         ctype,
@@ -479,6 +537,17 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         knockback: Fx::from_f64(r.knockback.unwrap_or(0.0)), // [kb]
         pierce: r.pierce.unwrap_or(false),                   // [kb]
         roll_range: Fx::from_f64(r.roll_range.unwrap_or(0.0)), // [kb]
+        pellets: r.pellets.unwrap_or(1).max(1) as i32,         // [shot]
+        recoil: Fx::from_f64(r.recoil.unwrap_or(0.0)),         // [shot]
+        // [heal] Battle Healer aura (default power 0 => every other card unaffected)
+        heal_aura_power: r.heal_aura.as_ref().and_then(|h| h.power).unwrap_or(0) as i32,
+        heal_aura_radius: Fx::from_f64(r.heal_aura.as_ref().and_then(|h| h.radius).unwrap_or(0.0)),
+        heal_aura_interval: r
+            .heal_aura
+            .as_ref()
+            .and_then(|h| h.interval)
+            .map(secs_to_ticks)
+            .unwrap_or(TICKS_PER_SECOND as i32 / 4),
         charge,
         // [charge] new mechanic fields
         dash_min,
@@ -516,6 +585,13 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         death_count: r.death_spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
         death_name: r.death_spawn.as_ref().map(|s| s.card.clone()),
         death_id: None,
+        // [mix] secondary deploy-spawn (mixed-composition cards)
+        deploy_spawn_count: r.deploy_spawn.as_ref().and_then(|s| s.count).unwrap_or(1).max(1) as i32,
+        deploy_spawn_name: r.deploy_spawn.as_ref().map(|s| s.card.clone()),
+        deploy_spawn_id: None,
+        // [curse] curse transform target (linked name->id in the post-load pass)
+        curse_spawn_name: r.curse_spawn.clone(),
+        curse_spawn_id: None,
         // [rev] revive spec (resolved to id in the post-load linking pass below)
         revive_name: r.revive.as_ref().map(|s| s.card.clone()),
         revive_as: None,
@@ -574,6 +650,8 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         ability_count: ab_count,
         ability_radius: ab_radius,
         ability_range: ab_range,
+        ability_knockback: ab_knockback,
+        ability_reduction: ab_reduction,
         ability_spawn_name: ab_spawn,
         ability_spawn_id: None,
         homing: r.homing, // [M2]
@@ -630,6 +708,14 @@ impl Library {
             }
             if let Some(n) = defs[i].death_name.clone() {
                 defs[i].death_id = index.get(&n).copied();
+            }
+            // [mix] link the secondary deploy-spawn (Goblin Gang / Rascals)
+            if let Some(n) = defs[i].deploy_spawn_name.clone() {
+                defs[i].deploy_spawn_id = index.get(&n).copied();
+            }
+            // [curse] link the curse-transform target (Goblin Curse -> goblin)
+            if let Some(n) = defs[i].curse_spawn_name.clone() {
+                defs[i].curse_spawn_id = index.get(&n).copied();
             }
             // [evo] resolve the evolved-variant name to its def id
             if let Some(n) = defs[i].evolved_name.clone() {

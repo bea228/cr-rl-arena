@@ -236,6 +236,9 @@ impl Engine {
             reflect_cd: 0, // [rfl]
             ability_cd: 0, // [champ]
             cloak: 0,      // [champ]
+            deflect: 0,    // [champ]
+            curse: 0,      // [curse]
+            curse_spawn: -1, // [curse]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -283,6 +286,9 @@ impl Engine {
             reflect_cd: 0, // [rfl]
             ability_cd: 0, // [champ] ready on deploy
             cloak: 0,      // [champ]
+            deflect: 0,    // [champ]
+            curse: 0,      // [curse]
+            curse_spawn: -1, // [curse]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -411,6 +417,22 @@ impl Engine {
         for k in 0..count {
             let off = Self::spawn_offset(k, count);
             self.spawn_unit(player as u8, spawn_def, V2::new(pos.x + off.x, pos.y + off.y));
+        }
+        // [mix] mixed-composition cards (Goblin Gang, Rascals): spawn the secondary unit
+        // type beside the primary cluster, offset down-lane so the groups don't overlap.
+        let (deploy_sid, deploy_cnt) = {
+            let d = &self.lib.defs[spawn_def];
+            (d.deploy_spawn_id, d.deploy_spawn_count.max(1))
+        };
+        if let Some(sid) = deploy_sid {
+            // nudge the second group one tile toward the owner's own side so the ranged
+            // backers sit behind the melee front without stacking on them.
+            let back = if player == 0 { Fx::from_int(-1) } else { Fx::from_int(1) };
+            let base = V2::new(pos.x, pos.y + back);
+            for k in 0..deploy_cnt {
+                let off = Self::spawn_offset(k, deploy_cnt);
+                self.spawn_unit(player as u8, sid, V2::new(base.x + off.x, base.y + off.y));
+            }
         }
         // [charge] Mega Knight deals area damage where it lands on deploy.
         if land_damage > 0 {
@@ -569,6 +591,7 @@ impl Engine {
         let acount = self.lib.defs[def].ability_count.max(1);
         let aradius = self.lib.defs[def].ability_radius;
         let arange = self.lib.defs[def].ability_range;
+        let aknock = self.lib.defs[def].ability_knockback;
         let aspawn = self.lib.defs[def].ability_spawn_id;
         if self.elixir[player] < cost {
             return false;
@@ -653,6 +676,79 @@ impl Engine {
                 self.entities[i].pos = endp;
                 true
             }
+            AbilityKind::LaneBomb => {
+                // [champ] Mighty Miner: drop an area bomb (damage + knockback) at the
+                // current spot, then dig across to the mirror lane (same row). The
+                // bomb hits every enemy within the blast radius, air and ground.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                let center = cpos;
+                let r2 = aradius.mul(aradius);
+                for j in 0..self.entities.len() {
+                    if j == i {
+                        continue;
+                    }
+                    let (dead, j_owner, alive, deploy, jpos, is_king) = {
+                        let e = &self.entities[j];
+                        (e.dead, e.owner, e.alive(), e.deploy, e.pos, e.is_king)
+                    };
+                    if dead || j_owner == owner || !alive || deploy > 0 {
+                        continue;
+                    }
+                    let off = jpos.sub(center);
+                    if off.len_sq() > r2 {
+                        continue;
+                    }
+                    // area damage (shield soaks first), as with any blast
+                    let mut rem = admg;
+                    if self.entities[j].shield_hp > 0 {
+                        let ab = rem.min(self.entities[j].shield_hp);
+                        self.entities[j].shield_hp -= ab;
+                        rem -= ab;
+                    }
+                    if rem > 0 {
+                        self.entities[j].hp -= rem;
+                    }
+                    if is_king {
+                        self.entities[j].activated = true;
+                    }
+                    // knockback: shove the victim directly away from the blast center
+                    if aknock.0 > 0 {
+                        let dir = off.step_toward(aknock);
+                        let jdef = self.entities[j].def;
+                        let np = Self::clamp_pos(V2::new(jpos.x + dir.x, jpos.y + dir.y));
+                        let np = block_river(jpos, np, &self.lib.defs[jdef]);
+                        self.entities[j].pos = np;
+                    }
+                }
+                // dig to the mirror lane: reflect x across the arena centre, keep row.
+                let newp = Self::clamp_pos(V2::new(WIDTH - cpos.x, cpos.y));
+                self.entities[i].pos = newp;
+                true
+            }
+            AbilityKind::Deflect => {
+                // [champ] Monk: open a timed damage-reduction window on himself. While
+                // active, apply_damage scales incoming hits by ability_reduction%.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                self.entities[i].deflect = self.entities[i].deflect.max(dur);
+                true
+            }
+            AbilityKind::Warp => {
+                // [champ] Boss Bandit: warp a fixed distance toward the enemy side and
+                // turn briefly untargetable/invisible, dropping the current target.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                // forward is toward the opponent's half (p0 -> +y, p1 -> -y)
+                let fwd = if owner == 0 { arange } else { Fx(0) - arange };
+                let jdef = def;
+                let np = Self::clamp_pos(V2::new(cpos.x, cpos.y + fwd));
+                let np = block_river(cpos, np, &self.lib.defs[jdef]);
+                self.entities[i].pos = np;
+                self.entities[i].cloak = self.entities[i].cloak.max(dur);
+                self.entities[i].target = None;
+                true
+            }
         }
     }
 
@@ -715,6 +811,7 @@ impl Engine {
             (d.damage, d.spell_radius, d.proj_speed, d.crown_pct, d.stun_ticks);
         let (effect, eticks, einterval, epower) =
             (d.effect, d.effect_ticks, d.effect_interval, d.effect_power);
+        let curse_spawn_id = d.curse_spawn_id; // [curse] Goblin Curse transform target
         let spell_targets = d.spell_max_targets; // [proj] Lightning: strike top-K by HP
         // [edep] unit-spawning spells: instant drop (Goblin Barrel) or a timed
         // spawn zone (Graveyard, via SpellEffect::Spawn below).
@@ -808,6 +905,65 @@ impl Engine {
                 kind: AeoKind::Spawn, power: 0, crown_pct: 100,
                 spawn_def: spawn_def.unwrap_or(0), spawn_count,
             }),
+            // [curse] Clone: duplicate every friendly troop in radius at 1 hp.
+            SpellEffect::Clone => {
+                let r2 = rad.mul(rad);
+                let mut copies: Vec<(usize, V2)> = Vec::new();
+                for e in self.entities.iter() {
+                    if e.dead || e.owner != owner {
+                        continue;
+                    }
+                    if self.lib.defs[e.def].ctype != CardType::Troop {
+                        continue; // buildings/towers are not cloned
+                    }
+                    let dx = e.pos.x - pos.x;
+                    let dy = e.pos.y - pos.y;
+                    if dx.mul(dx) + dy.mul(dy) <= r2 {
+                        copies.push((e.def, e.pos));
+                    }
+                }
+                for (cdef, cpos) in copies {
+                    self.spawn_unit(owner, cdef, cpos);
+                    if let Some(c) = self.entities.last_mut() {
+                        c.hp = 1; // clones are fragile 1-hp duplicates
+                        c.max_hp = self.lib.defs[cdef].hp.max(1);
+                        c.shield_hp = 0;
+                        c.deploy = 0; // clones appear ready (no re-deploy delay)
+                    }
+                }
+            }
+            // [curse] Goblin Curse: curse enemy troops in radius -- a DoT zone plus a
+            // one-shot transform (on their death they become a unit for the CASTER).
+            SpellEffect::Curse => {
+                let r2 = rad.mul(rad);
+                for idx in 0..self.entities.len() {
+                    let (dead, eowner, is_tower, epos, is_troop) = {
+                        let e = &self.entities[idx];
+                        (e.dead, e.owner, e.is_tower, e.pos, self.lib.defs[e.def].ctype == CardType::Troop)
+                    };
+                    if dead || eowner == owner || is_tower || !is_troop {
+                        continue;
+                    }
+                    let dx = epos.x - pos.x;
+                    let dy = epos.y - pos.y;
+                    if dx.mul(dx) + dy.mul(dy) > r2 {
+                        continue;
+                    }
+                    self.entities[idx].curse = self.entities[idx].curse.max(eticks.max(1));
+                    if let Some(cs) = curse_spawn_id {
+                        self.entities[idx].curse_spawn = cs as i32;
+                    }
+                }
+                // damage-over-time component (zone, like Poison)
+                if epower > 0 {
+                    self.area_effects.push(AreaEffect {
+                        owner, pos, radius: rad, ticks_left: eticks.max(1),
+                        interval: einterval.max(1), timer: einterval.max(1),
+                        kind: AeoKind::Damage, power: epower, crown_pct,
+                        spawn_def: 0, spawn_count: 0,
+                    });
+                }
+            }
         }
 
         // [edep] Goblin Barrel: a spell that instantly lands `spawn_count` units
@@ -912,6 +1068,59 @@ impl Engine {
         // [kb] continuous pull toward each active Tornado eye (every tick, not gated
         // by the DoT interval, so the drag is smooth and deterministic).
         self.apply_pull_movement();
+    }
+
+    /// [heal] Battle Healer aura: every `heal_aura_interval` ticks, each alive healer
+    /// restores `heal_aura_power` hp to friendly troops (itself included) within
+    /// `heal_aura_radius`. Buildings/towers are not healed (CR's `no_buildings`
+    /// filter). The aura is re-anchored to the healer each pulse, so it tracks her
+    /// as she moves. Deterministic: healers snapshotted in index order, then applied.
+    fn apply_heal_auras(&mut self) {
+        let healers: Vec<(V2, u8, i32, Fx, i32)> = self
+            .entities
+            .iter()
+            .filter_map(|e| {
+                // must be a fully-deployed, living healer (a healer dying this tick must
+                // not resurrect itself or keep healing via its own aura).
+                if !e.alive() || e.deploy > 0 {
+                    return None;
+                }
+                let d = &self.lib.defs[e.def];
+                if d.heal_aura_power <= 0 {
+                    return None;
+                }
+                Some((e.pos, e.owner, d.heal_aura_power, d.heal_aura_radius, d.heal_aura_interval.max(1)))
+            })
+            .collect();
+        if healers.is_empty() {
+            return;
+        }
+        // which entities are heal-eligible (friendly troops, no buildings/towers)
+        let is_troop: Vec<bool> =
+            self.entities.iter().map(|e| self.lib.defs[e.def].ctype == CardType::Troop).collect();
+        for (pos, owner, power, radius, interval) in healers {
+            if self.tick % interval as i64 != 0 {
+                continue; // this healer does not pulse this tick
+            }
+            let r2 = radius.mul(radius);
+            for idx in 0..self.entities.len() {
+                if !is_troop[idx] {
+                    continue;
+                }
+                let e = &self.entities[idx];
+                // heal only living, not-full friendly troops (never resurrect hp<=0).
+                if !e.alive() || e.owner != owner || e.hp >= e.max_hp {
+                    continue;
+                }
+                let dx = e.pos.x - pos.x;
+                let dy = e.pos.y - pos.y;
+                if dx.mul(dx) + dy.mul(dy) > r2 {
+                    continue;
+                }
+                let healed = (self.entities[idx].hp + power).min(self.entities[idx].max_hp);
+                self.entities[idx].hp = healed;
+            }
+        }
     }
 
     /// [kb] Drag enemies toward every active `Pull` area effect's center. Snapshot-free
@@ -1032,6 +1241,15 @@ impl Engine {
             if e.cloak > 0 {
                 e.cloak -= 1; // [champ]
             }
+            if e.deflect > 0 {
+                e.deflect -= 1; // [champ] Monk Deflect window
+            }
+            if e.curse > 0 {
+                e.curse -= 1; // [curse] Goblin Curse: expires if the unit survives it
+                if e.curse == 0 {
+                    e.curse_spawn = -1; // curse lifted: no transform on a later death
+                }
+            }
             if e.reveal > 0 {
                 e.reveal -= 1; // [inv] fade back to invisible when the window elapses
             }
@@ -1114,6 +1332,8 @@ impl Engine {
 
         // 2c. lingering area effects (poison/rage/heal zones)
         self.apply_area_effects();
+        // [heal] continuous heal auras (Battle Healer): re-anchored to each healer.
+        self.apply_heal_auras();
 
         let n = self.entities.len();
         let snap = Snap::build(&self.entities, &self.lib);
@@ -1375,7 +1595,9 @@ impl Engine {
                                 target: if homing { Some(snap.id[tj]) } else { None },
                                 aim: tpos,
                                 speed: d.proj_speed,
-                                damage: per_hit,
+                                // [shot] Hunter shotgun: the shot carries per-hit x the
+                                // number of pellets that connect at this firing range.
+                                damage: Self::shotgun_damage(per_hit, d.pellets, gap, d.range),
                                 splash: d.splash,
                                 crown_pct: 100,
                                 stun_ticks: d.on_hit_freeze_ticks, // [proj] Electro stun on hit
@@ -1428,6 +1650,18 @@ impl Engine {
                         // [inv] Royal Ghost becomes targetable for a short window around each hit.
                         if d.invisible {
                             set_reveal[i] = Some(REVEAL_TICKS);
+                        }
+                        // [shot] Firecracker self-recoil: jump backward (away from the
+                        // target) by `recoil` tiles on each shot. Ground-river + bounds
+                        // respected; applied here so it fires exactly once per shot.
+                        if d.recoil.0 > 0 {
+                            let back = ipos.sub(tpos).step_toward(d.recoil);
+                            let np = block_river(
+                                ipos,
+                                Self::clamp_pos(V2::new(ipos.x + back.x, ipos.y + back.y)),
+                                d,
+                            );
+                            set_pos[i] = Some(np);
                         }
                     }
                 }
@@ -1584,10 +1818,19 @@ impl Engine {
         }
 
         // 2. Acquire: nearest valid in sight, else nearest tower/building to march on.
+        // [A5] Ties on distance break deterministically toward the LOWER entity id
+        // (not merely scan order), so acquisition never depends on entity storage
+        // order. `better(cur, j, gap)` == "(gap, id) is strictly ahead of cur".
         let sight = d.sight.max(d.range);
         let mut best_sight: Option<(usize, Fx)> = None;
         let mut best_march: Option<(usize, Fx)> = None;
         let mut best_bldg: Option<(usize, Fx)> = None; // [ramp] nearest building/tower in sight (X-Bow)
+        let better = |cur: Option<(usize, Fx)>, j: usize, gap: Fx| -> bool {
+            match cur {
+                None => true,
+                Some((cj, cg)) => gap.0 < cg.0 || (gap.0 == cg.0 && snap.id[j] < snap.id[cj]),
+            }
+        };
         for j in 0..snap.x.len() {
             if !valid(j) {
                 continue;
@@ -1598,17 +1841,15 @@ impl Engine {
             } else {
                 snap.is_tower[j]
             };
-            if march_ok && best_march.map_or(true, |(_, bd)| gap < bd) {
+            if march_ok && better(best_march, j, gap) {
                 best_march = Some((j, gap));
             }
             if gap <= sight {
-                if best_sight.map_or(true, |(_, bd)| gap < bd) {
+                if better(best_sight, j, gap) {
                     best_sight = Some((j, gap));
                 }
                 // [ramp] track the nearest building/tower for building-priority targeters
-                if (snap.is_tower[j] || snap.is_building[j])
-                    && best_bldg.map_or(true, |(_, bd)| gap < bd)
-                {
+                if (snap.is_tower[j] || snap.is_building[j]) && better(best_bldg, j, gap) {
                     best_bldg = Some((j, gap));
                 }
             }
@@ -1726,6 +1967,24 @@ impl Engine {
     /// [charge] Build an instantly-detonating splash projectile at `pos` (used for
     /// Mega Knight deploy damage and jump-landing area damage). It lands next tick,
     /// hitting enemies within `radius` per the caster's `targets`.
+    /// [shot] Effective shotgun shot damage: `base` per pellet times the number of
+    /// pellets that connect. All `pellets` land point-blank; the hit count falls
+    /// linearly to 1 at max range (surface gap == range). `pellets <= 1` => the
+    /// ordinary single-shot damage, so every non-shotgun card is unaffected.
+    fn shotgun_damage(base: i32, pellets: i32, gap: Fx, range: Fx) -> i32 {
+        if pellets <= 1 {
+            return base;
+        }
+        if range.0 <= 0 {
+            return base * pellets;
+        }
+        let g = gap.max(Fx(0)).min(range);
+        let frac = Fx::from_int(1) - g.div(range); // 1 at point-blank, 0 at max range
+        let hits_fx = Fx::from_int(pellets as i64).mul(frac) + Fx::from_f64(0.5);
+        let hits = hits_fx.to_int_floor().clamp(1, pellets as i64) as i32;
+        base * hits
+    }
+
     fn instant_splash(owner: u8, pos: V2, damage: i32, radius: Fx, targets: Targets) -> Projectile {
         let r = if radius.0 > 0 { radius } else { Fx::from_f64(1.0) };
         Projectile {
@@ -1957,8 +2216,15 @@ impl Engine {
                 self.entities[i].slow = self.entities[i].slow.max(slow_add[i]);
             }
             if dmg[i] > 0 && !self.entities[i].dead {
-                // shield absorbs first
                 let mut rem = dmg[i];
+                // [champ] Monk Deflect: incoming damage reduced while the window is active
+                if self.entities[i].deflect > 0 {
+                    let red = self.lib.defs[self.entities[i].def].ability_reduction;
+                    if red > 0 {
+                        rem = ((rem as i64) * (100 - red as i64) / 100) as i32;
+                    }
+                }
+                // shield absorbs next
                 if self.entities[i].shield_hp > 0 {
                     let absorbed = rem.min(self.entities[i].shield_hp);
                     self.entities[i].shield_hp -= absorbed;
@@ -2040,6 +2306,8 @@ impl Engine {
         }
 
         let mut death_spawns: Vec<(u8, usize, V2)> = Vec::new();
+        // [curse] on a cursed troop's death, a unit spawns FOR THE OPPONENT (the caster).
+        let mut curse_spawns: Vec<(u8, usize, V2)> = Vec::new();
         // [charge] on-death area effects (Lumberjack drops a Rage zone)
         let mut death_areas: Vec<(u8, V2, SpellEffect, i32, Fx, i32)> = Vec::new();
         let mut revives: Vec<(u8, usize, V2, i32)> = Vec::new(); // [rev]
@@ -2057,8 +2325,15 @@ impl Engine {
             let revived = e.revived; // [rev]
             let hatch = e.hatch;     // [rev]
             let pos = e.pos;
+            let curse = e.curse;                 // [curse]
+            let curse_spawn = e.curse_spawn;     // [curse]
             let d = &self.lib.defs[e.def];
             let cv = d.crown_value;
+            // [curse] Goblin Curse: a cursed troop dying transforms into one unit for
+            // the OPPONENT (DeathSpawnIsEnemy). Towers never carry a curse.
+            if !is_tower && curse > 0 && curse_spawn >= 0 {
+                curse_spawns.push((1 - owner_u8, curse_spawn as usize, pos));
+            }
             // on-death spawns (Golem -> golemites, which themselves split again, ...).
             // A reborn unit (revived) drops nothing, so the chain can't loop forever.
             if !is_tower && !revived {
@@ -2120,6 +2395,10 @@ impl Engine {
         }
         self.entities.retain(|e| !e.dead);
         for (owner, did, pos) in death_spawns {
+            self.spawn_unit(owner, did, pos);
+        }
+        // [curse] cursed-death transforms (spawn one unit for the opponent/caster)
+        for (owner, did, pos) in curse_spawns {
             self.spawn_unit(owner, did, pos);
         }
         // [charge] spawn on-death area effects (reuses the AreaEffect framework)
@@ -3414,5 +3693,650 @@ mod medium_gap_tests {
             trail
         };
         assert_eq!(run(), run(), "spell-delay + formation paths must replay identically");
+    }
+}
+
+// [champ] A1: the four new champions' activated abilities. Each test deploys the
+// champion, makes it active + funds the elixir, fires Battle.activate_ability, and
+// asserts the real on-field effect (not just the return flag).
+#[cfg(test)]
+mod champ_ability_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn activate_ready(eng: &mut Engine, owner: usize, id: u32) {
+        // make the champion active and give the player plenty of elixir
+        for e in eng.entities.iter_mut() {
+            if e.id == id {
+                e.deploy = 0;
+            }
+        }
+        eng.elixir[owner] = Fx::from_int(10);
+    }
+    fn count_def(eng: &Engine, name: &str) -> usize {
+        let did = eng.lib.id_of(name).unwrap();
+        eng.entities.iter().filter(|e| e.def == did && !e.dead).count()
+    }
+
+    // Mighty Miner: LaneBomb drops an area blast (damage + knockback) at the vacated
+    // spot and digs the champion to the mirror lane (reflect x, same row).
+    #[test]
+    fn mighty_miner_lanebomb_damages_and_switches_lane() {
+        let mut eng = Engine::new(Library::default_lib());
+        let mm = eng.lib.id_of("mighty_miner").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, mm, at(4.5, 9.0)); // left lane (x < 9)
+        let mm_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(4.5, 11.0)); // 2.0 away, inside the 3.0 blast
+        let k_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        activate_ready(&mut eng, 0, mm_id);
+        let k_hp0 = eng.entities.iter().find(|e| e.id == k_id).unwrap().hp;
+        let k_pos0 = eng.entities.iter().find(|e| e.id == k_id).unwrap().pos;
+
+        assert!(eng.activate_ability(0), "Mighty Miner ability should fire");
+
+        let k = eng.entities.iter().find(|e| e.id == k_id).unwrap();
+        assert_eq!(k_hp0 - k.hp, 333, "bomb deals its 333 (L11) area damage");
+        assert!(k.pos.sub(k_pos0).len().to_f64() > 0.0, "enemy is knocked back");
+        // the champion digs to the mirror lane: x -> WIDTH - x (18 - 4.5 = 13.5)
+        let m = eng.entities.iter().find(|e| e.id == mm_id).unwrap();
+        assert!((m.pos.x.to_f64() - 13.5).abs() < 1e-6, "mighty miner switched lanes");
+        assert!(lane_of(m.pos.x) == 1, "now in the right lane");
+    }
+
+    // Monk: Deflect opens a timed damage-reduction window; incoming damage while it
+    // is active is scaled by (100 - reduction)%.
+    #[test]
+    fn monk_deflect_reduces_incoming_damage() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monk = eng.lib.id_of("monk").unwrap();
+        eng.spawn_unit(0, monk, at(9.0, 8.0));
+        let m_id = eng.entities.last().unwrap().id;
+        activate_ready(&mut eng, 0, m_id);
+
+        assert!(eng.activate_ability(0), "Monk ability should fire");
+        let mi = eng.entities.iter().position(|e| e.id == m_id).unwrap();
+        assert!(eng.entities[mi].deflect > 0, "deflect window is open");
+
+        let hp0 = eng.entities[mi].hp;
+        let n = eng.entities.len();
+        let mut dmg = vec![0i32; n];
+        dmg[mi] = 1000;
+        let zero = vec![0i32; n];
+        eng.apply_damage(&dmg, &zero, &zero);
+        // 65% reduction -> 1000 * 35% = 350 taken
+        assert_eq!(hp0 - eng.entities[mi].hp, 350, "Deflect cuts 65% of the hit");
+    }
+
+    // Little Prince: the Guardian summon spawns one ChampionGuard ally.
+    #[test]
+    fn little_prince_summons_guardian() {
+        let mut eng = Engine::new(Library::default_lib());
+        let lp = eng.lib.id_of("little_prince").unwrap();
+        eng.spawn_unit(0, lp, at(9.0, 8.0));
+        let lp_id = eng.entities.last().unwrap().id;
+        activate_ready(&mut eng, 0, lp_id);
+        assert_eq!(count_def(&eng, "guardian"), 0, "no guardian before the ability");
+
+        assert!(eng.activate_ability(0), "Little Prince ability should fire");
+        assert_eq!(count_def(&eng, "guardian"), 1, "exactly one guardian is summoned");
+        // the guardian belongs to the Little Prince's owner
+        let gid = eng.lib.id_of("guardian").unwrap();
+        let g = eng.entities.iter().find(|e| e.def == gid).unwrap();
+        assert_eq!(g.owner, 0, "guardian is an ally");
+    }
+
+    // Boss Bandit: Warp jumps a fixed 6 tiles toward the enemy side, turns briefly
+    // untargetable (invisible), and resets the current target.
+    #[test]
+    fn boss_bandit_warps_forward_and_cloaks() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bb = eng.lib.id_of("boss_bandit").unwrap();
+        eng.spawn_unit(0, bb, at(9.0, 8.0)); // owner 0 -> forward is +y
+        let bb_id = eng.entities.last().unwrap().id;
+        // pretend it had locked a target before warping
+        for e in eng.entities.iter_mut() {
+            if e.id == bb_id {
+                e.target = Some(999);
+            }
+        }
+        activate_ready(&mut eng, 0, bb_id);
+
+        assert!(eng.activate_ability(0), "Boss Bandit ability should fire");
+        let b = eng.entities.iter().find(|e| e.id == bb_id).unwrap();
+        assert!((b.pos.y.to_f64() - 14.0).abs() < 1e-6, "warped ~6 tiles forward (8 -> 14)");
+        assert!(b.cloak > 0, "boss bandit is briefly untargetable/invisible");
+        assert_eq!(b.target, None, "warp resets the target");
+    }
+
+    // Ability activations stay deterministic across identical runs.
+    #[test]
+    fn champion_abilities_are_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let mm = eng.lib.id_of("mighty_miner").unwrap();
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, mm, at(4.5, 9.0));
+            let mm_id = eng.entities.last().unwrap().id;
+            eng.spawn_unit(1, knight, at(4.5, 11.0));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            eng.elixir[0] = Fx::from_int(10);
+            eng.activate_ability(0);
+            let mut trail = Vec::new();
+            for _ in 0..20 {
+                eng.step([Action::noop(), Action::noop()]);
+                for e in &eng.entities {
+                    trail.push((e.id, e.pos.x.0, e.pos.y.0, e.hp, e.cloak, e.deflect));
+                }
+            }
+            let _ = mm_id;
+            trail
+        };
+        assert_eq!(run(), run(), "champion ability paths must replay identically");
+    }
+}
+
+// [shot] A2: Hunter shotgun burst (range falloff) + Firecracker self-recoil.
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    // The pellet model: all pellets land point-blank, falling to one at max range,
+    // and non-shotgun cards (pellets <= 1) are untouched.
+    #[test]
+    fn hunter_shotgun_falloff_is_monotonic() {
+        let base = 84;
+        let range = Fx::from_f64(4.0);
+        let pb = Engine::shotgun_damage(base, 10, Fx::from_f64(0.0), range);
+        let mid = Engine::shotgun_damage(base, 10, Fx::from_f64(2.0), range);
+        let far = Engine::shotgun_damage(base, 10, range, range);
+        assert_eq!(pb, base * 10, "all 10 pellets connect point-blank");
+        assert_eq!(far, base, "one pellet connects at max range");
+        assert!(pb > mid && mid > far, "monotonic range falloff: {pb} {mid} {far}");
+        // a plain single-shot card is unaffected by the shotgun path
+        assert_eq!(Engine::shotgun_damage(100, 1, Fx::from_f64(0.0), range), 100);
+    }
+
+    // In the live engine the Hunter's fired shot carries a far larger payload
+    // point-blank than at the edge of its range.
+    #[test]
+    fn hunter_fires_bigger_burst_point_blank_than_far() {
+        fn shot_damage(center_gap: f64) -> i32 {
+            let mut eng = Engine::new(Library::default_lib());
+            let hunter = eng.lib.id_of("hunter").unwrap();
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, hunter, at(9.0, 8.0));
+            eng.spawn_unit(1, knight, at(9.0, 8.0 + center_gap));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            for _ in 0..90 {
+                // pin both so the firing range equals `center_gap` exactly
+                for e in eng.entities.iter_mut() {
+                    if e.owner == 0 {
+                        e.pos = at(9.0, 8.0);
+                    } else {
+                        e.pos = at(9.0, 8.0 + center_gap);
+                    }
+                }
+                eng.step(noop());
+                if let Some(p) = eng.projectiles.iter().find(|p| p.owner == 0) {
+                    return p.damage;
+                }
+            }
+            0
+        }
+        let pb = shot_damage(1.2); // point-blank
+        let far = shot_damage(5.0); // near the edge of range
+        assert!(pb > 0 && far > 0, "hunter fired in both cases: pb={pb} far={far}");
+        assert!(pb >= 84 * 6, "point-blank fires most of the 10 pellets: {pb}");
+        assert!(pb > far * 3, "point-blank burst dwarfs the max-range shot: {pb} vs {far}");
+    }
+
+    // Firecracker jumps backward (away from its target) each time it fires.
+    #[test]
+    fn firecracker_recoils_backward_on_firing() {
+        let mut eng = Engine::new(Library::default_lib());
+        let fc = eng.lib.id_of("firecracker").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, fc, at(9.0, 8.0));
+        let fc_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 12.0)); // in range (toward +y)
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let fc_y = |eng: &Engine| eng.entities.iter().find(|e| e.id == fc_id).unwrap().pos.y.to_f64();
+        for _ in 0..140 {
+            let before = fc_y(&eng);
+            eng.step(noop());
+            if eng.projectiles.iter().any(|p| p.owner == 0) {
+                let after = fc_y(&eng);
+                assert!(
+                    after < before - 0.5,
+                    "firecracker recoils backward when it fires: {before} -> {after}"
+                );
+                return;
+            }
+        }
+        panic!("firecracker never fired");
+    }
+}
+
+// [heal] A3: Battle Healer continuous heal aura.
+#[cfg(test)]
+mod heal_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    #[test]
+    fn battle_healer_heals_nearby_ally_and_self() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bh = eng.lib.id_of("battle_healer").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, bh, at(9.0, 8.0));
+        let bh_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(0, knight, at(9.6, 8.4)); // ally ~0.7 away (inside the 3.0 aura)
+        let ally_id = eng.entities.last().unwrap().id;
+        // a far-away ally that should NOT be reached by the aura
+        eng.spawn_unit(0, knight, at(9.0, 14.0));
+        let far_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        // wound everyone to half hp
+        for e in eng.entities.iter_mut() {
+            e.hp = e.max_hp / 2;
+        }
+        let hp_of = |eng: &Engine, id: u32| eng.entities.iter().find(|e| e.id == id).unwrap().hp;
+        let ally0 = hp_of(&eng, ally_id);
+        let self0 = hp_of(&eng, bh_id);
+        let far0 = hp_of(&eng, far_id);
+
+        for _ in 0..40 {
+            eng.step(noop());
+        }
+
+        let ally1 = hp_of(&eng, ally_id);
+        let self1 = hp_of(&eng, bh_id);
+        let far1 = hp_of(&eng, far_id);
+        assert!(ally1 > ally0, "nearby ally heals over time: {ally0} -> {ally1}");
+        assert!(self1 > self0, "the healer heals herself: {self0} -> {self1}");
+        assert_eq!(far1, far0, "an ally outside the radius is not healed");
+        let ally_max = eng.entities.iter().find(|e| e.id == ally_id).unwrap().max_hp;
+        assert!(ally1 <= ally_max, "heal never overshoots max hp");
+    }
+
+    // The aura stops the moment the healer dies.
+    #[test]
+    fn heal_aura_stops_when_healer_dies() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bh = eng.lib.id_of("battle_healer").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, bh, at(9.0, 8.0));
+        let bh_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(0, knight, at(9.5, 8.0));
+        let ally_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+            if e.id == ally_id {
+                e.hp = e.max_hp / 2;
+            }
+        }
+        // kill the healer, then step: the ally must not keep healing
+        for e in eng.entities.iter_mut() {
+            if e.id == bh_id {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop()); // healer is removed by the death pass
+        let before = eng.entities.iter().find(|e| e.id == ally_id).unwrap().hp;
+        for _ in 0..20 {
+            eng.step(noop());
+        }
+        let after = eng.entities.iter().find(|e| e.id == ally_id).unwrap().hp;
+        assert_eq!(after, before, "no healer => no heal");
+    }
+}
+
+// [mix] A4: mixed-composition deploys (Goblin Gang, Rascals).
+#[cfg(test)]
+mod mix_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+
+    #[test]
+    fn goblin_gang_deploys_three_stab_plus_three_spear() {
+        let mut eng = Engine::new(Library::default_lib());
+        let gg = eng.lib.id_of("goblin_gang").unwrap();
+        let sg = eng.lib.id_of("spear_goblins").unwrap();
+        eng.place_card(0, gg, at(9.0, 6.0));
+        let stab = eng.entities.iter().filter(|e| e.def == gg).count();
+        let spear = eng.entities.iter().filter(|e| e.def == sg).count();
+        assert_eq!(stab, 3, "3 stab goblins (the primary cluster)");
+        assert_eq!(spear, 3, "3 spear goblins (the secondary deploy-spawn)");
+        assert_eq!(eng.entities.len(), 6, "exactly 6 units, nothing else");
+        // every unit belongs to the deploying player
+        assert!(eng.entities.iter().all(|e| e.owner == 0));
+    }
+
+    #[test]
+    fn rascals_deploys_one_boy_plus_two_girls() {
+        let mut eng = Engine::new(Library::default_lib());
+        let r = eng.lib.id_of("rascals").unwrap();
+        let girl = eng.lib.id_of("rascal_girl").unwrap();
+        eng.place_card(0, r, at(9.0, 6.0));
+        let boys = eng.entities.iter().filter(|e| e.def == r).count();
+        let girls = eng.entities.iter().filter(|e| e.def == girl).count();
+        assert_eq!(boys, 1, "1 Rascal Boy tank");
+        assert_eq!(girls, 2, "2 Rascal Girls");
+        assert_eq!(eng.entities.len(), 3);
+    }
+
+    // The gang cards are deck-legal; the summon-only sub-unit is not.
+    #[test]
+    fn mix_card_deck_legality() {
+        let lib = Library::default_lib();
+        let legal = |n: &str| lib.deployable.contains(&lib.id_of(n).unwrap());
+        assert!(legal("goblin_gang"), "Goblin Gang is deck-legal");
+        assert!(legal("rascals"), "Rascals is deck-legal");
+        assert!(!legal("rascal_girl"), "rascal_girl is summon-only");
+    }
+
+    #[test]
+    fn mixed_deploy_is_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let gg = eng.lib.id_of("goblin_gang").unwrap();
+            eng.place_card(0, gg, at(9.0, 6.0));
+            let mut v: Vec<(usize, i64, i64)> =
+                eng.entities.iter().map(|e| (e.def, e.pos.x.0, e.pos.y.0)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run(), "mixed deploy must replay identically");
+    }
+}
+
+// [A5] Targeting commitment + deterministic acquisition tie-break.
+#[cfg(test)]
+mod aggro_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+    fn pin(eng: &mut Engine, id: u32, p: V2) {
+        for e in eng.entities.iter_mut() {
+            if e.id == id {
+                e.pos = p;
+            }
+        }
+    }
+    fn target_of(eng: &Engine, id: u32) -> Option<u32> {
+        eng.entities.iter().find(|e| e.id == id).unwrap().target
+    }
+
+    // A committed target is held while it stays within leash, is NOT stolen by a
+    // closer newcomer, and is only re-acquired once it leaves the leash.
+    #[test]
+    fn commitment_holds_then_reacquires_beyond_leash() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap(); // sight 5.5, range 1.2
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        let aid = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 12.0)); // surf ~3.5, inside sight
+        let a_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, aid, at(9.0, 8.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, aid), Some(a_id), "acquires the enemy in sight");
+
+        // a closer enemy appears -- it must NOT steal the committed target.
+        eng.spawn_unit(1, knight, at(9.0, 9.5)); // surf ~1.0, much closer
+        let b_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        for _ in 0..3 {
+            pin(&mut eng, aid, at(9.0, 8.0));
+            pin(&mut eng, a_id, at(9.0, 12.0));
+            pin(&mut eng, b_id, at(9.0, 9.5));
+            eng.step(noop());
+            assert_eq!(target_of(&eng, aid), Some(a_id), "closer newcomer must not steal aggro");
+        }
+
+        // push the committed target out past the leash (surf ~6.5 > sight 5.5): now it
+        // re-acquires -- the nearest valid enemy, which is B.
+        for _ in 0..2 {
+            pin(&mut eng, aid, at(9.0, 8.0));
+            pin(&mut eng, a_id, at(9.0, 15.0));
+            pin(&mut eng, b_id, at(9.0, 9.5));
+            eng.step(noop());
+        }
+        assert_eq!(target_of(&eng, aid), Some(b_id), "re-acquires once the old target leaves leash");
+    }
+
+    // On a distance tie, acquisition is deterministic: the lower entity id wins,
+    // regardless of entity storage order.
+    #[test]
+    fn acquisition_ties_break_to_lower_id() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        let aid = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(8.0, 11.0)); // equal distance from (9,8)
+        let e1 = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(10.0, 11.0)); // mirror: same distance
+        let e2 = eng.entities.last().unwrap().id;
+        assert!(e1 < e2);
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, aid, at(9.0, 8.0));
+        pin(&mut eng, e1, at(8.0, 11.0));
+        pin(&mut eng, e2, at(10.0, 11.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, aid), Some(e1), "equidistant tie resolves to the lower id");
+    }
+}
+
+// [A6] Crown-tower per-spell damage percentages match the decoded tables.
+#[cfg(test)]
+mod crown_tests {
+    use super::*;
+    use crate::cards::Library;
+
+    #[test]
+    fn spell_crown_percentages_match_decoded_tables() {
+        let lib = Library::default_lib();
+        let pct = |n: &str| lib.defs[lib.id_of(n).unwrap()].crown_pct;
+        // Spells whose crown reduction is stored as `CrownTowerDamagePercent`
+        // (negative): crown% = 100 + value.
+        assert_eq!(pct("arrows"), 20, "arrows -80");
+        assert_eq!(pct("fireball"), 23, "fireball -77");
+        assert_eq!(pct("rocket"), 23, "rocket -77");
+        assert_eq!(pct("lightning"), 25, "lightning -75");
+        assert_eq!(pct("snowball"), 25, "snowball -75");
+        assert_eq!(pct("the_log"), 13, "log -87");
+        assert_eq!(pct("tornado"), 30, "tornado -70");
+        assert_eq!(pct("poison"), 22, "poison -78 (corrected from 30)");
+        assert_eq!(pct("earthquake"), 60, "earthquake -40 (corrected from 33)");
+        // Spells whose crown damage is a {BaseDamage, TowerDamage} struct:
+        // crown% = round(TowerDamage / BaseDamage * 100).
+        assert_eq!(pct("zap"), 25, "zap 19/75");
+        assert_eq!(pct("freeze"), 26, "freeze 15/58");
+    }
+}
+
+// [curse] A7: Clone, Suspicious Bush, Goblin Curse (Mother Witch + Goblinstein deferred).
+#[cfg(test)]
+mod a7_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+    fn count(eng: &Engine, name: &str) -> usize {
+        let id = eng.lib.id_of(name).unwrap();
+        eng.entities.iter().filter(|e| e.def == id && !e.dead).count()
+    }
+
+    // Clone duplicates every friendly troop in its radius at 1 hp.
+    #[test]
+    fn clone_duplicates_friendly_troops_at_one_hp() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        eng.spawn_unit(0, knight, at(9.3, 8.3));
+        // an enemy knight in the blast must NOT be cloned (only the caster's troops)
+        eng.spawn_unit(1, knight, at(9.0, 8.6));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let clone = eng.lib.id_of("clone").unwrap();
+        eng.resolve_spell(0, clone, at(9.1, 8.1));
+        // 2 originals + 2 clones (owner 0) + 1 enemy original = 5 knights total
+        assert_eq!(count(&eng, "knight"), 5);
+        let clones = eng.entities.iter().filter(|e| e.def == knight && e.owner == 0 && e.hp == 1).count();
+        assert_eq!(clones, 2, "exactly two 1-hp clones for the caster");
+        let enemy_clones = eng.entities.iter().filter(|e| e.def == knight && e.owner == 1).count();
+        assert_eq!(enemy_clones, 1, "the enemy troop is not cloned");
+    }
+
+    // Suspicious Bush pops into two Bush Goblins when it dies.
+    #[test]
+    fn suspicious_bush_pops_two_goblins_on_death() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bush = eng.lib.id_of("suspicious_bush").unwrap();
+        eng.place_card(0, bush, at(9.0, 6.0));
+        assert_eq!(count(&eng, "suspicious_bush"), 1);
+        for e in eng.entities.iter_mut() {
+            if e.def == bush {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop());
+        assert_eq!(count(&eng, "suspicious_bush"), 0, "bush consumed");
+        assert_eq!(count(&eng, "bush_goblin"), 2, "two Bush Goblins pop out");
+    }
+
+    // Goblin Curse: a cursed enemy that dies becomes a Goblin for the CASTER.
+    #[test]
+    fn goblin_curse_transforms_dead_enemy_for_caster() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(1, knight, at(9.0, 10.0)); // enemy of caster 0
+        let eid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let gc = eng.lib.id_of("goblin_curse").unwrap();
+        eng.resolve_spell(0, gc, at(9.0, 10.0));
+        assert!(
+            eng.entities.iter().find(|e| e.id == eid).unwrap().curse > 0,
+            "enemy is cursed"
+        );
+        // kill the cursed enemy
+        for e in eng.entities.iter_mut() {
+            if e.id == eid {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop());
+        let gob = eng.lib.id_of("goblins").unwrap();
+        let for_caster = eng.entities.iter().filter(|e| e.def == gob && e.owner == 0).count();
+        assert_eq!(for_caster, 1, "a Goblin spawns for the caster (opponent of the dead unit)");
+    }
+
+    // An un-cursed enemy death spawns nothing extra.
+    #[test]
+    fn uncursed_death_does_not_transform() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(1, knight, at(9.0, 10.0));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+            e.hp = 0;
+        }
+        eng.step(noop());
+        assert_eq!(count(&eng, "goblins"), 0, "no curse => no transform");
+    }
+
+    // [A8] The legitimate serde_json (backed by `ryu`, not the `zmij` typosquat) is
+    // linked and formats/parses correctly -- a sanity check that the supply-chain
+    // downgrade kept the JSON toolchain working end to end.
+    #[test]
+    fn serde_json_toolchain_is_intact() {
+        // ryu float formatting (the crate zmij masqueraded as) is exact + shortest.
+        assert_eq!(serde_json::to_string(&3.5f64).unwrap(), "3.5");
+        assert_eq!(serde_json::to_string(&1.0f64).unwrap(), "1.0");
+        let v: serde_json::Value = serde_json::from_str("{\"a\": 2.56, \"b\": [1,2,3]}").unwrap();
+        assert_eq!(v["a"].as_f64().unwrap(), 2.56);
+        assert_eq!(v["b"].as_array().unwrap().len(), 3);
+        // the real card library (parsed via serde_json) still loads cleanly.
+        assert!(Library::default_lib().deployable.len() >= 15);
+    }
+
+    #[test]
+    fn curse_and_clone_are_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, knight, at(9.0, 8.0));
+            eng.spawn_unit(0, knight, at(9.4, 8.2));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            let clone = eng.lib.id_of("clone").unwrap();
+            eng.resolve_spell(0, clone, at(9.2, 8.1));
+            let mut v: Vec<(usize, i64, i64, i32)> =
+                eng.entities.iter().map(|e| (e.def, e.pos.x.0, e.pos.y.0, e.hp)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run());
     }
 }

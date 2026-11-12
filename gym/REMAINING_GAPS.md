@@ -29,7 +29,7 @@ not implemented.
 
 ## A. Actionable
 
-- [ ] **A1 — New champions' activated abilities.** Mighty Miner, Monk, Little Prince,
+- [x] **A1 — New champions' activated abilities.** Mighty Miner, Monk, Little Prince,
   Boss Bandit are deck-legal with real combat but no activated ability (`ability` = None).
   Model each ability faithfully using the decoded ability data (cost/cooldown/duration/
   damage from the character TOMLs + `ManaCostFromSummonerMana` in `spells_characters.csv`).
@@ -39,57 +39,191 @@ not implemented.
   Guardian, Mighty Miner's bomb-dash), or approximate to the nearest kind and document it.
   Acceptance: each of the 4 champions has a working `ability{...}` that fires via
   `Battle.activate_ability`, with a test per champion asserting the effect.
-- [ ] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
+  DONE: added 3 new `AbilityKind`s (`LaneBomb`, `Deflect`, `Warp`) + reused `Summon`.
+  Mighty Miner `lanebomb` = switch to mirror lane (reflect x) + drop a 333-dmg (L11 of
+  MightyMinerExplosion BaseDamage 130) / 3.0-tile-radius / 1.8-knockback blast at the old
+  spot; Monk `deflect` = 4.0s (AbilityStateDuration 4000) 65%-damage-reduction window
+  (ShieldBoostMonk DamageReduction=65), applied in `apply_damage`; Little Prince `summon` =
+  1 `guardian` (ChampionGuard 1600hp/233dmg, added as new `deployable:false` card); Boss
+  Bandit `warp` = 6-tile (WarpY 6000) forward warp + 1.0s (SpawnTime 1000) cloak + target
+  reset. Costs (ManaCost) exact: MM/Monk/BB=1, LP=3. Cooldowns: Boss Bandit 3.0s exact
+  (Cooldown=3000); MM 3.5s / Monk 12.0s / LP 20.0s are documented APPROXIMATIONS — the
+  decoded tables store only the leveled stat-tag `ability_cooldown`, not its numeric. Tests:
+  `mighty_miner_lanebomb_damages_and_switches_lane`, `monk_deflect_reduces_incoming_damage`,
+  `little_prince_summons_guardian`, `boss_bandit_warps_forward_and_cloaks`,
+  `champion_abilities_are_deterministic`. `cargo test --release`: 29/29 pass. Commit: 65abdcb
+- [x] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
   weak projectile (per-pellet damage); real Hunter deals many pellets (big point-blank
   burst, falls off with range). Model its effective multi-pellet damage from the data
   (pellet count × per-pellet) without overpowering it at range. Firecracker should apply
   its self-recoil knockback on firing. Acceptance: Hunter kills far faster point-blank
   than at max range; a test covers both; Firecracker recoils. Resolve real numbers from
   the tables (HunterProjectile / `MultipleProjectiles` / Firecracker recoil fields).
-- [ ] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
+  DONE: added `pellets` + `recoil` card fields. Hunter `pellets:10` (`MultipleProjectiles=10`;
+  per-pellet base 33 => L11 84, which is exactly today's `damage:84`); the fired shot now
+  carries `per_hit × pellets_that_connect` via `Engine::shotgun_damage` — all 10 point-blank,
+  falling linearly to 1 at max range (gap/range), so 840 point-blank vs 84 at the edge, no
+  range buff. Firecracker `recoil:1.0` (`AttackPushBack=1000`) shoves the shooter backward
+  (away from target, river/bounds-respected) once per shot. Tests:
+  `hunter_shotgun_falloff_is_monotonic`, `hunter_fires_bigger_burst_point_blank_than_far`,
+  `firecracker_recoils_backward_on_firing`. `cargo test --release`: 32/32 pass. Commit: c362471
+- [x] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
   (and herself) in a radius. Model it (reuse the area-effect/heal system — see `Heal`
   `SpellEffect` and `apply_area_effects`). Acceptance: allies in her radius regain hp over
   time; a test asserts a damaged nearby ally heals while she's alive. Pull heal rate/radius
   from the decoded data.
-- [ ] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
+  DONE: new `heal_aura{power,radius,interval}` card field + `Engine::apply_heal_auras`
+  (re-anchored to the healer each pulse so it tracks her movement). battle_healer heals
+  friendly TROOPS (incl. self, no buildings/towers — CR `friendly_troop_no_buildings`)
+  within radius 3.0 (`BattleHealerAll` AEO Radius 3000) by 26 hp every 0.25s (HitFrequency
+  250) = ~104/s ≈ the L11 HealPerSecond (40 base ×2.56 = 102). Filters on `alive()` so a
+  healer dying this tick can't self-resurrect via its own aura (caught + fixed by the
+  second test). Tests: `battle_healer_heals_nearby_ally_and_self` (incl. a far ally that is
+  NOT healed), `heal_aura_stops_when_healer_dies`. `cargo test --release`: 34/34 pass.
+  Commit: 5372752
+- [x] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
   types in one card (Goblin Gang = 3 stab goblins + 3 spear goblins; Rascals = 1 Rascal Boy
   tank + 2 Rascal Girls ranged). The engine spawns `count` of ONE def. Add a
   secondary-spawn-on-deploy mechanism (e.g. a `deploy_spawn{card,count}` field, or reuse the
   spawn system at deploy) so these are faithful, then add the two cards to `cards.json` with
   real stats. Acceptance: deploying each yields the correct mixed group; a test verifies the
   counts/types. (Add the summon-only sub-units as `deployable:false`.)
-- [ ] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
+  DONE: added a `deploy_spawn{card,count}` field + the place_card branch that spawns the
+  secondary group one tile toward the owner's side. Both cards added with real stats from
+  spells_characters.csv + the sub-unit TOMLs (L11 ×2.56): `goblin_gang` (elixir 3, 3×
+  Goblin_Stab 202hp/125dmg melee + deploy_spawn 3× existing `spear_goblins`), `rascals`
+  (elixir 5, 1× RascalBoy 1833hp/218dmg tank + deploy_spawn 2× new `rascal_girl` 261hp/125dmg
+  ranged, `deployable:false`). Goblin Gang reuses the existing spear_goblins def (spawn_unit
+  spawns one entity per call, ignoring that def's own count). Tests:
+  `goblin_gang_deploys_three_stab_plus_three_spear`, `rascals_deploys_one_boy_plus_two_girls`,
+  `mix_card_deck_legality`, `mixed_deploy_is_deterministic`. `cargo test --release`: 38/38
+  pass. Commit: e4b43a1
+- [x] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
   acquisition toward CR's real rules where the data supports it: correct retarget timing,
   and not dropping a committed target prematurely. Keep it deterministic (nearest valid;
   ties → lower entity id). Acceptance: a test showing a unit holds its committed target
   within leash and only re-acquires when it should.
-- [ ] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
+  DONE: M1's `sight.max(range)` leash is already the CR-plausible aggro radius (kept; the
+  M1 regression test still passes, so I did NOT widen it — CR drops a target that leaves
+  sight). The concrete refinement: acquisition tie-breaks were implicit (scan/index order);
+  made them an explicit `(gap, id)` lexicographic rule via a `better()` comparator across
+  all three scans (march / sight / building-priority) so equal-distance targets always
+  resolve to the LOWER entity id independent of entity storage order. Locked in the
+  commitment contract with tests: a committed target is held within leash, a closer
+  newcomer does NOT steal aggro (CR pull mechanic), and it re-acquires only once the old
+  target leaves the leash. Tests: `commitment_holds_then_reacquires_beyond_leash`,
+  `acquisition_ties_break_to_lower_id`. `cargo test --release`: 40/40 pass. Commit: c1beb1a
+- [x] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
   against the decoded `CrownTowerDamagePercent` / `{BaseDamage,TowerDamage}` structs and
   correct any that are placeholders. Acceptance: the spells' crown percentages match the
   tables; note any corrected in the checklist.
-- [ ] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
+  DONE: crown reduction lives in each spell's `characters/*.toml` as a NEGATIVE
+  `CrownTowerDamagePercent` (crown% = 100 + value), or as a `{BaseDamage,TowerDamage}` AEO
+  struct (crown% = round(TowerDamage/BaseDamage×100)). Verified all 11 modelled spells.
+  CORRECTED 2 placeholders: **poison 30→22** (−78) and **earthquake 33→60** (−40,
+  `BuildingDamagePercent=350` is separate and already not modelled as crown). Confirmed
+  already-correct: arrows 20 (−80), fireball 23 (−77), rocket 23 (−77), lightning 25 (−75),
+  snowball 25 (−75), the_log 13 (−87), tornado 30 (−70), zap 25 (19/75), freeze 26 (15/58).
+  NOT in the decoded dump (no crown field on their projectiles): barbarian_barrel and
+  royal_delivery — left at 35 and flagged as unverified-from-data. The sole
+  `CrownTowerDamagePercent` for a *projectile* (FireballSpellRocketMan −70) is an event card,
+  out of scope. Test: `spell_crown_percentages_match_decoded_tables`. `cargo test --release`:
+  41/41 pass. Commit: 0800725
+- [x] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
   Bush, Goblinstein).** Implement the ones whose mechanic maps cleanly; for any that need a
   genuinely new system beyond reasonable scope, mark `[~]` DEFERRED with the specific reason
-  (don't half-add a misleading version). Document each decision.
-- [ ] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
+  (don't half-add a misleading version). Document each decision. (Item overall [x]: 3
+  implemented, 2 deferred-with-reason — all 5 decisions made & documented below.)
+  - **Clone — IMPLEMENTED.** New `SpellEffect::Clone`: duplicates every friendly TROOP in
+    radius 3.0 (`Clone` Radius 3000) at 1 hp. elixir 3. Test: `clone_duplicates_friendly_troops_at_one_hp`.
+  - **Suspicious Bush — IMPLEMENTED.** A fragile stationary bush (hp 82 = 32×2.56, speed 0,
+    0 dmg) that death-spawns 2 `bush_goblin` (338hp/256dmg) via the existing death_spawn
+    system (`DeathAreaEffect SuspiciousBush_SpawnBushGoblin ×2`). elixir 2. Approximation:
+    the invisible/proximity-ambush reveal is NOT modelled (sim has no proximity-reveal
+    trigger and an untargetable idle bush would never pop); modelled as a visible fragile
+    bush → 2 goblins on death, which reproduces the combat outcome. Test:
+    `suspicious_bush_pops_two_goblins_on_death`.
+  - **Goblin Curse — IMPLEMENTED.** New `SpellEffect::Curse` + per-entity `curse`/`curse_spawn`
+    state + a death-pass transform: cursed enemy troops (radius 3.0, 6.0s = `LifeDuration 6000`)
+    take a 36/s DoT (`GoblinCurseDamage` 14×2.56, crown 28% from CrownTowerDamagePerHit 4) and,
+    on death, spawn 1 `goblins` FOR THE CASTER (`DeathSpawnIsEnemy=true, DeathSpawnCount=1`).
+    elixir 2. Tests: `goblin_curse_transforms_dead_enemy_for_caster`, `uncursed_death_does_not_transform`,
+    `curse_and_clone_are_deterministic`.
+  - **Mother Witch — [~] DEFERRED.** Her curse is applied by her ranged ATTACK
+    (`BuffOnDamage=VoodooCurse`, `DeathSpawn=VoodooHog`). The curse-death transform system now
+    EXISTS (shared with Goblin Curse), but applying it on a projectile hit needs the
+    (spawn-def,count) payload carried through the hot `proj_impact` path, which only passes
+    `i32` accumulator arrays (dmg/stun/slow) — it cannot carry a per-victim spawn payload
+    without a new projectile-rider subsystem. Deferred to avoid a misleading half-version.
+  - **Goblinstein — [~] DEFERRED.** A Champion that deploys a linked monster + Doctor pet
+    (`SummonCharacter goblinstein + goblinstein_doctor`) with the Doctor's own revive/zap
+    ability — a new champion-pet-link + ability subsystem beyond clean reuse.
+  `cargo test --release`: 46/46 pass. Commit: 33741ac
+- [x] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
   flagged advisories (`gym` + `server` dependency manifests) and bump conservatively to
   patched versions; `cargo test` must stay green. If a bump can't be done safely, record the
   advisory IDs and why. Acceptance: the fixable advisories resolved; build + tests green.
+  DONE: the gym `Cargo.lock` was supply-chain POISONED — the crates.io index metadata for
+  `serde_json >=1.0.147` lists a typosquat **`zmij`** in place of the real `ryu` (float
+  formatter), and `serde_derive 1.0.229` lists a fake **`syn ^3`** (3.0.10) in place of the
+  real `syn 2.x`; the malicious crates were cached locally so the build passed silently
+  (verified via `cargo tree`: serde_json→zmij, serde_derive→syn v3.0.10, and the index cache
+  scan showing serde_json 1.0.130–1.0.146 use ryu but 1.0.147+ use zmij).
+  - **HIGH — `zmij` (ryu typosquat via serde_json):** FIXED by pinning serde_json to the last
+    clean release **1.0.146** (`cargo update -p serde_json --precise 1.0.146` → removes zmij,
+    restores `ryu 1.0.23`).
+  - **MODERATE — fake `syn 3.0.10` (via serde_derive 1.0.229):** FIXED by pinning serde to
+    **1.0.228** (last release whose serde_derive uses `syn ^2.0.81`) → removes `syn 3.0.10`,
+    keeps `syn 2.0.119`.
+  - Added upper bounds in `gym/Cargo.toml` (`serde >=1.0.200,<1.0.229`; `serde_json
+    >=1.0.100,<1.0.147`) so the lock can't drift back into the poisoned range.
+  - **LOW — `pyo3 0.22.6` (RUSTSEC-2025-0020, buffer overflow in `PyString::from_object`,
+    fixed only in 0.24.x):** RECORDED, not forced — the fix requires a 0.22→0.24 MAJOR API
+    bump that would rework the `#[pyclass]`/`#[pymethods]`/`Bound<PyModule>` bindings and risk
+    the PyO3/maturin build, and the vulnerable API (`PyString::from_object`) is not used by
+    this crate nor exercised by `cargo test` (the rlib/determinism path). Per the conservative
+    guidance, logged rather than risk the build.
+  - server (`server/pyproject.toml`): only `websockets>=12.0` + the local gym; no pinned
+    vulnerable version to bump (floor already current).
+  Scan confirmed zmij/syn3 are the ONLY poisoned edges in the tree. Test:
+  `serde_json_toolchain_is_intact` (ryu float formatting exact; card lib loads). Pre-fix lock
+  backed up at the session scratchpad `Cargo.lock.tampered.bak`. `cargo test --release`:
+  47/47 pass. Commit: f8709bd
 
 ## B. Scope decisions (confirm & document — do NOT implement)
 
-- [ ] **B1 — Tick/decision granularity.** Keep the deterministic 20 Hz core tick (changing
+- [x] **B1 — Tick/decision granularity.** Keep the deterministic 20 Hz core tick (changing
   it rescales every tuned stat); decision cadence is already configurable (`CR_DECISION_EVERY`).
   Confirm + document as by-design.
-- [ ] **B2 — Pathfinding sub-tile exactness / instant turning.** The tile flow field is
+  CONFIRMED by-design: `arena.rs TICKS_PER_SECOND = 20` is the fixed simulation tick that
+  every stat is calibrated against (times×20, speeds/20); changing it would rescale the whole
+  table. Agent decision cadence is already decoupled and configurable:
+  `server/cr_server/match.py DECISION_EVERY = CR_DECISION_EVERY` (default 4 ⇒ 5 Hz decisions,
+  `=1` to act every tick) while the core still steps at 20 Hz. No change needed.
+- [x] **B2 — Pathfinding sub-tile exactness / instant turning.** The tile flow field is
   faithful at tile granularity; sub-tile bank-hugging and facing/turn delay are intentionally
   not modelled. Confirm + document.
-- [ ] **B3 — Game modes.** 1v1 only; no 2v2, draft, Touchdown, or event rulesets. By design
+  CONFIRMED by-design: movement uses a per-tick BFS tile flow field (`PathGrid`, `path_goal`,
+  cross-tick `PathCache` memo in engine.rs) that routes around river/towers/buildings at tile
+  granularity and is deterministic. Sub-tile bank-hugging and facing/turn-rate delay are
+  deliberately not modelled (they would add float-prone, order-sensitive state for little RL
+  value). Off-limits per the work rules; no change.
+- [x] **B3 — Game modes.** 1v1 only; no 2v2, draft, Touchdown, or event rulesets. By design
   for the hackathon. Confirm + document.
-- [ ] **B4 — Matchmaking.** Server pairs by queue order with its own Elo ladder, not CR
+  CONFIRMED by-design: the engine is hard-wired 2-seat 1v1 (`elixir: [Fx; 2]`, `player > 1`
+  rejected, `for p in 0..2`). No 2v2/draft/Touchdown/event rulesets exist (grep clean). This
+  is the intended hackathon scope. No change.
+- [x] **B4 — Matchmaking.** Server pairs by queue order with its own Elo ladder, not CR
   trophy bands. By design. Confirm + document.
-- [ ] **B5 — Event-only card variants.** Super/Party/Chess variants are out of standard-
+  CONFIRMED by-design: agents "join the queue and are paired" (`server/cr_server/server.py`)
+  and results update a persistent Elo ladder (`cr_server/elo.py` + `leaderboard.py`,
+  `elo.update`). There are no CR trophy bands / chests / ladder-progression — an Elo ladder is
+  the intended competition model. No change.
+- [x] **B5 — Event-only card variants.** Super/Party/Chess variants are out of standard-
   ladder scope. Confirm + document.
+  CONFIRMED by-design: the 128-card roster is the standard-ladder set; no Super/Party/Chess
+  event variants are present (grep of cards.json clean) and the decoded `*_ev1`/`super*`/event
+  TOMLs are intentionally excluded. No change.
 
 ---
 

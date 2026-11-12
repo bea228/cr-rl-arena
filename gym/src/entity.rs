@@ -25,6 +25,9 @@ pub struct Entity {
     pub reflect_cd: i32,// [rfl] ticks until this unit may emit a reflect pulse again (Electro Giant)
     pub ability_cd: i32,  // [champ] ticks until champion ability usable again (0 = ready)
     pub cloak: i32,       // [champ] ticks of untargetability remaining (Cloak ability)
+    pub deflect: i32,     // [champ] ticks of damage-reduction remaining (Monk Deflect ability)
+    pub curse: i32,       // [curse] ticks of curse remaining (Goblin Curse): on death, transform
+    pub curse_spawn: i32, // [curse] def id to spawn FOR THE OPPONENT on a cursed death (-1 = none)
     pub charge_dist: Fx,// distance moved toward target unobstructed (prince)
     pub dash: i32,      // [charge] ticks remaining in current leap (0 = not leaping)
     pub dash_cd: i32,   // [charge] ticks until the next leap is allowed
