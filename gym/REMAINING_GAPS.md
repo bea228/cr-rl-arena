@@ -129,10 +129,36 @@ not implemented.
   `CrownTowerDamagePercent` for a *projectile* (FireballSpellRocketMan −70) is an event card,
   out of scope. Test: `spell_crown_percentages_match_decoded_tables`. `cargo test --release`:
   41/41 pass. Commit: 0800725
-- [ ] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
+- [x] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
   Bush, Goblinstein).** Implement the ones whose mechanic maps cleanly; for any that need a
   genuinely new system beyond reasonable scope, mark `[~]` DEFERRED with the specific reason
-  (don't half-add a misleading version). Document each decision.
+  (don't half-add a misleading version). Document each decision. (Item overall [x]: 3
+  implemented, 2 deferred-with-reason — all 5 decisions made & documented below.)
+  - **Clone — IMPLEMENTED.** New `SpellEffect::Clone`: duplicates every friendly TROOP in
+    radius 3.0 (`Clone` Radius 3000) at 1 hp. elixir 3. Test: `clone_duplicates_friendly_troops_at_one_hp`.
+  - **Suspicious Bush — IMPLEMENTED.** A fragile stationary bush (hp 82 = 32×2.56, speed 0,
+    0 dmg) that death-spawns 2 `bush_goblin` (338hp/256dmg) via the existing death_spawn
+    system (`DeathAreaEffect SuspiciousBush_SpawnBushGoblin ×2`). elixir 2. Approximation:
+    the invisible/proximity-ambush reveal is NOT modelled (sim has no proximity-reveal
+    trigger and an untargetable idle bush would never pop); modelled as a visible fragile
+    bush → 2 goblins on death, which reproduces the combat outcome. Test:
+    `suspicious_bush_pops_two_goblins_on_death`.
+  - **Goblin Curse — IMPLEMENTED.** New `SpellEffect::Curse` + per-entity `curse`/`curse_spawn`
+    state + a death-pass transform: cursed enemy troops (radius 3.0, 6.0s = `LifeDuration 6000`)
+    take a 36/s DoT (`GoblinCurseDamage` 14×2.56, crown 28% from CrownTowerDamagePerHit 4) and,
+    on death, spawn 1 `goblins` FOR THE CASTER (`DeathSpawnIsEnemy=true, DeathSpawnCount=1`).
+    elixir 2. Tests: `goblin_curse_transforms_dead_enemy_for_caster`, `uncursed_death_does_not_transform`,
+    `curse_and_clone_are_deterministic`.
+  - **Mother Witch — [~] DEFERRED.** Her curse is applied by her ranged ATTACK
+    (`BuffOnDamage=VoodooCurse`, `DeathSpawn=VoodooHog`). The curse-death transform system now
+    EXISTS (shared with Goblin Curse), but applying it on a projectile hit needs the
+    (spawn-def,count) payload carried through the hot `proj_impact` path, which only passes
+    `i32` accumulator arrays (dmg/stun/slow) — it cannot carry a per-victim spawn payload
+    without a new projectile-rider subsystem. Deferred to avoid a misleading half-version.
+  - **Goblinstein — [~] DEFERRED.** A Champion that deploys a linked monster + Doctor pet
+    (`SummonCharacter goblinstein + goblinstein_doctor`) with the Doctor's own revive/zap
+    ability — a new champion-pet-link + ability subsystem beyond clean reuse.
+  `cargo test --release`: 46/46 pass. Commit: __PENDING__
 - [ ] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
   flagged advisories (`gym` + `server` dependency manifests) and bump conservatively to
   patched versions; `cargo test` must stay green. If a bump can't be done safely, record the

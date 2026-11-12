@@ -2039,6 +2039,60 @@
    "projectile_speed": 9.0,
    "deploy_time": 1.0
   },
+  "clone": {
+   "elixir": 3,
+   "type": "spell",
+   "radius": 3.0,
+   "targets": "ground",
+   "effect": "clone"
+  },
+  "goblin_curse": {
+   "elixir": 2,
+   "type": "spell",
+   "radius": 3.0,
+   "crown_tower_damage_pct": 28,
+   "targets": "both",
+   "effect": "curse",
+   "effect_duration": 6.0,
+   "effect_interval": 1.0,
+   "effect_power": 36,
+   "curse_spawn": "goblins"
+  },
+  "suspicious_bush": {
+   "elixir": 2,
+   "type": "troop",
+   "hp": 82,
+   "damage": 0,
+   "hit_speed": 1.0,
+   "load_time": 1.0,
+   "range": 0.5,
+   "speed": 0.0,
+   "collision_radius": 0.5,
+   "mass": 0.3,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "death_spawn": {
+    "card": "bush_goblin",
+    "count": 2
+   }
+  },
+  "bush_goblin": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 338,
+   "damage": 256,
+   "hit_speed": 1.4,
+   "load_time": 1.1,
+   "range": 0.8,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 0.3
+  },
   "bomb_tower": {
    "elixir": 4,
    "type": "building",

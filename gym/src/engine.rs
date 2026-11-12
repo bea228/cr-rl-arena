@@ -237,6 +237,8 @@ impl Engine {
             ability_cd: 0, // [champ]
             cloak: 0,      // [champ]
             deflect: 0,    // [champ]
+            curse: 0,      // [curse]
+            curse_spawn: -1, // [curse]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -285,6 +287,8 @@ impl Engine {
             ability_cd: 0, // [champ] ready on deploy
             cloak: 0,      // [champ]
             deflect: 0,    // [champ]
+            curse: 0,      // [curse]
+            curse_spawn: -1, // [curse]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -807,6 +811,7 @@ impl Engine {
             (d.damage, d.spell_radius, d.proj_speed, d.crown_pct, d.stun_ticks);
         let (effect, eticks, einterval, epower) =
             (d.effect, d.effect_ticks, d.effect_interval, d.effect_power);
+        let curse_spawn_id = d.curse_spawn_id; // [curse] Goblin Curse transform target
         let spell_targets = d.spell_max_targets; // [proj] Lightning: strike top-K by HP
         // [edep] unit-spawning spells: instant drop (Goblin Barrel) or a timed
         // spawn zone (Graveyard, via SpellEffect::Spawn below).
@@ -900,6 +905,65 @@ impl Engine {
                 kind: AeoKind::Spawn, power: 0, crown_pct: 100,
                 spawn_def: spawn_def.unwrap_or(0), spawn_count,
             }),
+            // [curse] Clone: duplicate every friendly troop in radius at 1 hp.
+            SpellEffect::Clone => {
+                let r2 = rad.mul(rad);
+                let mut copies: Vec<(usize, V2)> = Vec::new();
+                for e in self.entities.iter() {
+                    if e.dead || e.owner != owner {
+                        continue;
+                    }
+                    if self.lib.defs[e.def].ctype != CardType::Troop {
+                        continue; // buildings/towers are not cloned
+                    }
+                    let dx = e.pos.x - pos.x;
+                    let dy = e.pos.y - pos.y;
+                    if dx.mul(dx) + dy.mul(dy) <= r2 {
+                        copies.push((e.def, e.pos));
+                    }
+                }
+                for (cdef, cpos) in copies {
+                    self.spawn_unit(owner, cdef, cpos);
+                    if let Some(c) = self.entities.last_mut() {
+                        c.hp = 1; // clones are fragile 1-hp duplicates
+                        c.max_hp = self.lib.defs[cdef].hp.max(1);
+                        c.shield_hp = 0;
+                        c.deploy = 0; // clones appear ready (no re-deploy delay)
+                    }
+                }
+            }
+            // [curse] Goblin Curse: curse enemy troops in radius -- a DoT zone plus a
+            // one-shot transform (on their death they become a unit for the CASTER).
+            SpellEffect::Curse => {
+                let r2 = rad.mul(rad);
+                for idx in 0..self.entities.len() {
+                    let (dead, eowner, is_tower, epos, is_troop) = {
+                        let e = &self.entities[idx];
+                        (e.dead, e.owner, e.is_tower, e.pos, self.lib.defs[e.def].ctype == CardType::Troop)
+                    };
+                    if dead || eowner == owner || is_tower || !is_troop {
+                        continue;
+                    }
+                    let dx = epos.x - pos.x;
+                    let dy = epos.y - pos.y;
+                    if dx.mul(dx) + dy.mul(dy) > r2 {
+                        continue;
+                    }
+                    self.entities[idx].curse = self.entities[idx].curse.max(eticks.max(1));
+                    if let Some(cs) = curse_spawn_id {
+                        self.entities[idx].curse_spawn = cs as i32;
+                    }
+                }
+                // damage-over-time component (zone, like Poison)
+                if epower > 0 {
+                    self.area_effects.push(AreaEffect {
+                        owner, pos, radius: rad, ticks_left: eticks.max(1),
+                        interval: einterval.max(1), timer: einterval.max(1),
+                        kind: AeoKind::Damage, power: epower, crown_pct,
+                        spawn_def: 0, spawn_count: 0,
+                    });
+                }
+            }
         }
 
         // [edep] Goblin Barrel: a spell that instantly lands `spawn_count` units
@@ -1179,6 +1243,12 @@ impl Engine {
             }
             if e.deflect > 0 {
                 e.deflect -= 1; // [champ] Monk Deflect window
+            }
+            if e.curse > 0 {
+                e.curse -= 1; // [curse] Goblin Curse: expires if the unit survives it
+                if e.curse == 0 {
+                    e.curse_spawn = -1; // curse lifted: no transform on a later death
+                }
             }
             if e.reveal > 0 {
                 e.reveal -= 1; // [inv] fade back to invisible when the window elapses
@@ -2236,6 +2306,8 @@ impl Engine {
         }
 
         let mut death_spawns: Vec<(u8, usize, V2)> = Vec::new();
+        // [curse] on a cursed troop's death, a unit spawns FOR THE OPPONENT (the caster).
+        let mut curse_spawns: Vec<(u8, usize, V2)> = Vec::new();
         // [charge] on-death area effects (Lumberjack drops a Rage zone)
         let mut death_areas: Vec<(u8, V2, SpellEffect, i32, Fx, i32)> = Vec::new();
         let mut revives: Vec<(u8, usize, V2, i32)> = Vec::new(); // [rev]
@@ -2253,8 +2325,15 @@ impl Engine {
             let revived = e.revived; // [rev]
             let hatch = e.hatch;     // [rev]
             let pos = e.pos;
+            let curse = e.curse;                 // [curse]
+            let curse_spawn = e.curse_spawn;     // [curse]
             let d = &self.lib.defs[e.def];
             let cv = d.crown_value;
+            // [curse] Goblin Curse: a cursed troop dying transforms into one unit for
+            // the OPPONENT (DeathSpawnIsEnemy). Towers never carry a curse.
+            if !is_tower && curse > 0 && curse_spawn >= 0 {
+                curse_spawns.push((1 - owner_u8, curse_spawn as usize, pos));
+            }
             // on-death spawns (Golem -> golemites, which themselves split again, ...).
             // A reborn unit (revived) drops nothing, so the chain can't loop forever.
             if !is_tower && !revived {
@@ -2316,6 +2395,10 @@ impl Engine {
         }
         self.entities.retain(|e| !e.dead);
         for (owner, did, pos) in death_spawns {
+            self.spawn_unit(owner, did, pos);
+        }
+        // [curse] cursed-death transforms (spawn one unit for the opponent/caster)
+        for (owner, did, pos) in curse_spawns {
             self.spawn_unit(owner, did, pos);
         }
         // [charge] spawn on-death area effects (reuses the AreaEffect framework)
@@ -4120,5 +4203,125 @@ mod crown_tests {
         // crown% = round(TowerDamage / BaseDamage * 100).
         assert_eq!(pct("zap"), 25, "zap 19/75");
         assert_eq!(pct("freeze"), 26, "freeze 15/58");
+    }
+}
+
+// [curse] A7: Clone, Suspicious Bush, Goblin Curse (Mother Witch + Goblinstein deferred).
+#[cfg(test)]
+mod a7_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+    fn count(eng: &Engine, name: &str) -> usize {
+        let id = eng.lib.id_of(name).unwrap();
+        eng.entities.iter().filter(|e| e.def == id && !e.dead).count()
+    }
+
+    // Clone duplicates every friendly troop in its radius at 1 hp.
+    #[test]
+    fn clone_duplicates_friendly_troops_at_one_hp() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        eng.spawn_unit(0, knight, at(9.3, 8.3));
+        // an enemy knight in the blast must NOT be cloned (only the caster's troops)
+        eng.spawn_unit(1, knight, at(9.0, 8.6));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let clone = eng.lib.id_of("clone").unwrap();
+        eng.resolve_spell(0, clone, at(9.1, 8.1));
+        // 2 originals + 2 clones (owner 0) + 1 enemy original = 5 knights total
+        assert_eq!(count(&eng, "knight"), 5);
+        let clones = eng.entities.iter().filter(|e| e.def == knight && e.owner == 0 && e.hp == 1).count();
+        assert_eq!(clones, 2, "exactly two 1-hp clones for the caster");
+        let enemy_clones = eng.entities.iter().filter(|e| e.def == knight && e.owner == 1).count();
+        assert_eq!(enemy_clones, 1, "the enemy troop is not cloned");
+    }
+
+    // Suspicious Bush pops into two Bush Goblins when it dies.
+    #[test]
+    fn suspicious_bush_pops_two_goblins_on_death() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bush = eng.lib.id_of("suspicious_bush").unwrap();
+        eng.place_card(0, bush, at(9.0, 6.0));
+        assert_eq!(count(&eng, "suspicious_bush"), 1);
+        for e in eng.entities.iter_mut() {
+            if e.def == bush {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop());
+        assert_eq!(count(&eng, "suspicious_bush"), 0, "bush consumed");
+        assert_eq!(count(&eng, "bush_goblin"), 2, "two Bush Goblins pop out");
+    }
+
+    // Goblin Curse: a cursed enemy that dies becomes a Goblin for the CASTER.
+    #[test]
+    fn goblin_curse_transforms_dead_enemy_for_caster() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(1, knight, at(9.0, 10.0)); // enemy of caster 0
+        let eid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let gc = eng.lib.id_of("goblin_curse").unwrap();
+        eng.resolve_spell(0, gc, at(9.0, 10.0));
+        assert!(
+            eng.entities.iter().find(|e| e.id == eid).unwrap().curse > 0,
+            "enemy is cursed"
+        );
+        // kill the cursed enemy
+        for e in eng.entities.iter_mut() {
+            if e.id == eid {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop());
+        let gob = eng.lib.id_of("goblins").unwrap();
+        let for_caster = eng.entities.iter().filter(|e| e.def == gob && e.owner == 0).count();
+        assert_eq!(for_caster, 1, "a Goblin spawns for the caster (opponent of the dead unit)");
+    }
+
+    // An un-cursed enemy death spawns nothing extra.
+    #[test]
+    fn uncursed_death_does_not_transform() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(1, knight, at(9.0, 10.0));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+            e.hp = 0;
+        }
+        eng.step(noop());
+        assert_eq!(count(&eng, "goblins"), 0, "no curse => no transform");
+    }
+
+    #[test]
+    fn curse_and_clone_are_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, knight, at(9.0, 8.0));
+            eng.spawn_unit(0, knight, at(9.4, 8.2));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            let clone = eng.lib.id_of("clone").unwrap();
+            eng.resolve_spell(0, clone, at(9.2, 8.1));
+            let mut v: Vec<(usize, i64, i64, i32)> =
+                eng.entities.iter().map(|e| (e.def, e.pos.x.0, e.pos.y.0, e.hp)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run());
     }
 }

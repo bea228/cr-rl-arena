@@ -32,6 +32,8 @@ pub enum SpellEffect {
     Slow,    // area slow (enemies, duration)
     Tornado, // [kb] pull enemies toward center over a duration + small damage-over-time
     Spawn,   // [edep] periodically summon units over a radius (Graveyard)
+    Clone,   // [curse] duplicate friendly troops in radius at 1 hp (Clone spell)
+    Curse,   // [curse] curse enemies in radius: DoT + on-death transform into a unit for the caster
 }
 
 impl SpellEffect {
@@ -44,6 +46,8 @@ impl SpellEffect {
             "slow" => SpellEffect::Slow,
             "tornado" => SpellEffect::Tornado, // [kb]
             "spawn" => SpellEffect::Spawn, // [edep]
+            "clone" => SpellEffect::Clone, // [curse]
+            "curse" => SpellEffect::Curse, // [curse]
             _ => SpellEffect::None,
         }
     }
@@ -188,6 +192,9 @@ pub struct CardDef {
     pub deploy_spawn_count: i32,
     pub deploy_spawn_name: Option<String>,
     pub deploy_spawn_id: Option<usize>,
+    // [curse] Goblin Curse: the unit a cursed enemy becomes (for the caster) when it dies.
+    pub curse_spawn_name: Option<String>,
+    pub curse_spawn_id: Option<usize>,
     // [rev] revive-on-death: when this unit dies from lifetime expiry, hatch one
     // `revive_name`/`revive_as` at `revive_hp_pct`% of that card's hp, exactly once
     // (used by the Phoenix egg -> reborn Phoenix). Linked name->id in the post-load pass.
@@ -387,6 +394,7 @@ struct RawCard {
     spawn: Option<RawSpawn>,
     death_spawn: Option<RawDeath>,
     deploy_spawn: Option<RawSpawn>, // [mix] secondary units spawned on deploy (reuses card/count)
+    curse_spawn: Option<String>,    // [curse] unit a cursed enemy becomes on death (Goblin Curse)
     revive: Option<RawRevive>, // [rev]
     death_damage: Option<i64>,  // [edep]
     death_radius: Option<f64>,  // [edep]
@@ -581,6 +589,9 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         deploy_spawn_count: r.deploy_spawn.as_ref().and_then(|s| s.count).unwrap_or(1).max(1) as i32,
         deploy_spawn_name: r.deploy_spawn.as_ref().map(|s| s.card.clone()),
         deploy_spawn_id: None,
+        // [curse] curse transform target (linked name->id in the post-load pass)
+        curse_spawn_name: r.curse_spawn.clone(),
+        curse_spawn_id: None,
         // [rev] revive spec (resolved to id in the post-load linking pass below)
         revive_name: r.revive.as_ref().map(|s| s.card.clone()),
         revive_as: None,
@@ -701,6 +712,10 @@ impl Library {
             // [mix] link the secondary deploy-spawn (Goblin Gang / Rascals)
             if let Some(n) = defs[i].deploy_spawn_name.clone() {
                 defs[i].deploy_spawn_id = index.get(&n).copied();
+            }
+            // [curse] link the curse-transform target (Goblin Curse -> goblin)
+            if let Some(n) = defs[i].curse_spawn_name.clone() {
+                defs[i].curse_spawn_id = index.get(&n).copied();
             }
             // [evo] resolve the evolved-variant name to its def id
             if let Some(n) = defs[i].evolved_name.clone() {
