@@ -128,7 +128,7 @@ not implemented.
   royal_delivery — left at 35 and flagged as unverified-from-data. The sole
   `CrownTowerDamagePercent` for a *projectile* (FireballSpellRocketMan −70) is an event card,
   out of scope. Test: `spell_crown_percentages_match_decoded_tables`. `cargo test --release`:
-  41/41 pass. Commit: __PENDING__
+  41/41 pass. Commit: 0800725
 - [ ] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
   Bush, Goblinstein).** Implement the ones whose mechanic maps cleanly; for any that need a
   genuinely new system beyond reasonable scope, mark `[~]` DEFERRED with the specific reason
