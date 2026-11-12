@@ -4511,3 +4511,123 @@ mod r1_mother_witch_tests {
         assert_eq!(run(), run());
     }
 }
+
+// [champ] R2: Goblinstein (Champion) deploys as two linked parts -- the big melee
+// Monster (the deck-legal champion body, buildings-only) + the summon-only Doctor
+// (a ranged zap/freeze support). The pairing reuses the deploy-spawn path; the
+// Doctor's tether/revive ABILITY is deferred (documented in GAPS_ROUND2.md R2).
+#[cfg(test)]
+mod r2_goblinstein_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+
+    // Deploying Goblinstein yields BOTH parts on the owner's side.
+    #[test]
+    fn goblinstein_deploys_monster_plus_doctor() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monster = eng.lib.id_of("goblinstein").unwrap();
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        eng.place_card(0, monster, at(9.0, 6.0));
+        let monsters = eng.entities.iter().filter(|e| e.def == monster).count();
+        let doctors = eng.entities.iter().filter(|e| e.def == doctor).count();
+        assert_eq!(monsters, 1, "one Goblinstein Monster (the champion body)");
+        assert_eq!(doctors, 1, "one Goblinstein Doctor (the paired pet)");
+        assert_eq!(eng.entities.len(), 2, "exactly the two linked parts, nothing else");
+        assert!(eng.entities.iter().all(|e| e.owner == 0), "both parts on the deployer's side");
+    }
+
+    // The champion card is deck-legal and marked `is_champion` (so the existing
+    // one-champion-per-deck rule, which counts is_champion cards, covers it); the
+    // Doctor is summon-only. The two parts carry their real, distinct combat roles.
+    #[test]
+    fn goblinstein_is_champion_doctor_is_summon_only() {
+        let lib = Library::default_lib();
+        let legal = |n: &str| lib.deployable.contains(&lib.id_of(n).unwrap());
+        assert!(legal("goblinstein"), "Goblinstein is deck-legal");
+        assert!(!legal("goblinstein_doctor"), "the Doctor is summon-only (deployable:false)");
+        let monster = &lib.defs[lib.id_of("goblinstein").unwrap()];
+        assert!(monster.is_champion, "Goblinstein is a Champion -> one-per-deck rule applies");
+        assert_eq!(monster.elixir, 5, "Champion costs 5 elixir");
+        assert!(monster.buildings_only, "the Monster is a buildings-only melee tank");
+        assert_eq!(monster.proj_speed.0, 0, "the Monster is melee");
+        assert_eq!(monster.deploy_spawn_id, Some(lib.id_of("goblinstein_doctor").unwrap()));
+        let doctor = &lib.defs[lib.id_of("goblinstein_doctor").unwrap()];
+        assert_eq!(doctor.targets, Targets::Both, "the Doctor hits air + ground");
+        assert!(doctor.proj_speed.0 > 0, "the Doctor is ranged");
+        assert!(doctor.on_hit_freeze_ticks > 0, "the Doctor's zap freezes its target");
+    }
+
+    // The one-champion-per-deck rule still rejects a second champion alongside it
+    // (the rule counts is_champion defs; this guards it for the new card too).
+    #[test]
+    fn two_champions_including_goblinstein_is_illegal() {
+        let lib = Library::default_lib();
+        let deck = [
+            lib.id_of("goblinstein").unwrap(),
+            lib.id_of("monk").unwrap(), // a second champion
+            lib.id_of("knight").unwrap(),
+            lib.id_of("archers").unwrap(),
+            lib.id_of("goblins").unwrap(),
+            lib.id_of("musketeer").unwrap(),
+            lib.id_of("fireball").unwrap(),
+            lib.id_of("arrows").unwrap(),
+        ];
+        let champs = deck.iter().filter(|&&id| lib.defs[id].is_champion).count();
+        assert_eq!(champs, 2, "two champions present -> env deck-legality must reject (>1)");
+    }
+
+    // The Doctor's zap-freeze is applied by its own ranged attack: drive the Doctor
+    // (owner 0) against a pinned enemy and confirm the hit freezes (stuns) it.
+    #[test]
+    fn doctor_zap_freezes_the_enemy_it_hits() {
+        let mut eng = Engine::new(Library::default_lib());
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, doctor, at(9.0, 8.0));
+        let doc_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 11.0)); // inside the Doctor's 5.5 range
+        let eid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let mut froze = false;
+        for _ in 0..160 {
+            for e in eng.entities.iter_mut() {
+                if e.id == doc_id {
+                    e.pos = at(9.0, 8.0);
+                } else if e.id == eid {
+                    e.pos = at(9.0, 11.0);
+                }
+            }
+            eng.step([Action::noop(), Action::noop()]);
+            if eng.entities.iter().find(|e| e.id == eid).map_or(false, |e| e.stun > 0) {
+                froze = true;
+                break;
+            }
+        }
+        assert!(froze, "the Goblinstein Doctor's zap freezes the enemy it hits");
+    }
+
+    // Determinism guard: the pairing deploy replays bit-identically.
+    #[test]
+    fn goblinstein_pairing_is_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let monster = eng.lib.id_of("goblinstein").unwrap();
+            eng.place_card(0, monster, at(9.0, 6.0));
+            let mut v: Vec<(usize, u8, i64, i64, i32)> = eng
+                .entities
+                .iter()
+                .map(|e| (e.def, e.owner, e.pos.x.0, e.pos.y.0, e.hp))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run(), "Goblinstein pairing must replay identically");
+    }
+}

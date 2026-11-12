@@ -2003,6 +2003,46 @@
     "range": 6.0
    }
   },
+  "goblinstein": {
+   "elixir": 5,
+   "type": "troop",
+   "hp": 2240,
+   "damage": 128,
+   "hit_speed": 1.5,
+   "load_time": 0.7,
+   "range": 1.2,
+   "speed": 1.0,
+   "collision_radius": 0.75,
+   "mass": 1.8,
+   "sight": 7.5,
+   "deploy_time": 1.0,
+   "targets": "ground",
+   "target_buildings_only": true,
+   "champion": true,
+   "deploy_spawn": {
+    "card": "goblinstein_doctor",
+    "count": 1
+   }
+  },
+  "goblinstein_doctor": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 722,
+   "damage": 136,
+   "hit_speed": 1.8,
+   "load_time": 1.3,
+   "range": 5.5,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.4,
+   "sight": 5.5,
+   "deploy_time": 1.0,
+   "targets": "both",
+   "projectile_speed": 5.0,
+   "homing": true,
+   "on_hit_freeze": 0.5
+  },
   "guardian": {
    "elixir": 0,
    "type": "troop",
