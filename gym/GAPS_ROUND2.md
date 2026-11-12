@@ -91,13 +91,37 @@ items open. This round closes them. Same discipline as before.
   `goblinstein_is_champion_doctor_is_summon_only`, `two_champions_including_goblinstein_is_illegal`,
   `doctor_zap_freezes_the_enemy_it_hits`, `goblinstein_pairing_is_deterministic`.
   `cargo test --release`: 56/56 pass. Commit: 4579925
-- [ ] **R3 — Real champion ability cooldowns.** A1 left Mighty Miner / Monk / Little Prince
-  cooldowns as approximations because the CSV `AbilityCooldown` column was empty. Dig deeper —
-  check `actions.toml`, the `[ABILITY.*]`/`[ACTION.*]` blocks in each champion's TOML, and any
-  leveled cooldown stat table — for the real numeric cooldowns, and correct `cards.json` if
-  found. If they are genuinely absent everywhere in the decoded data, mark `[~]` with proof of
-  where you looked and keep the documented approximations. Acceptance: either corrected values
-  (with source) or a documented, evidenced deferral. (Boss Bandit's 3.0s is already real.)
+- [~] **R3 — Real champion ability cooldowns.** DEFERRED — the real numeric cooldowns for
+  Mighty Miner / Monk / Little Prince are genuinely absent from the decoded data; kept A1's
+  documented approximations (mighty_miner 3.5s, monk 12.0s, little_prince 20.0s). Where I
+  looked (all under `/home/clio/projects/clashroyale/client-new/data/`):
+  - `csv_logic/character_abilities.csv` — has a `Cooldown` column, but it is EMPTY for every
+    real champion ability (`MightyMinerLaneSwitch`, `Deflect`, `ChampGuardianAbility`,
+    `GoldenKnightChain`, `ArcherQueenRapid`, `SkeletonKing`); only the `NOTINUSEABILITY*`
+    placeholder rows carry `Cooldown=11000`.
+  - Each standard champion's TOML `[ABILITY.*]` block has NO inline `Cooldown = <n>` — only
+    `StatsTags.Cooldown = "ability_cooldown"`, a NAMED stat reference
+    (`characters/monk.toml` `[ABILITY.Deflect]`, `characters/mighty_miner.toml`
+    `[ABILITY.MightyMinerLaneSwitch]`, `characters/little_prince.toml`
+    `[ABILITY.ChampGuardianAbility]`). The `[STATS.*_ability]` blocks are display-only
+    (`Value="ability_cooldown"`, `Unit=TIME_PRECISE`, TID, Icon) and carry no number.
+  - `actions.toml` — no cooldown/recharge data at all.
+  - Exhaustive grep of the WHOLE data tree (`csv_logic/`, `csv_client/`, `battle_constants.json`,
+    `card_catalog.json`): ZERO numeric definitions of `ability_cooldown`; it only ever appears
+    as a `StatsTags.Cooldown`/`Value` named-stat reference. `battle_constants.json` has only
+    `battle_start_cooldown_ms` (the match-start countdown, unrelated). `spell_stat_types.csv`:
+    no cooldown rows.
+  - The ONLY champions with an inline numeric `[ABILITY.*] Cooldown` are: **Boss Bandit**
+    (`boss_bandit.toml` `Cooldown = 3000` → 3.0s, already real in cards.json ✓), and
+    non-standard-ladder VARIANTS/hero-forms that are out of scope per B5 (`megamonk.toml`
+    `MegaMonk/MegaDeflect` 20000, `superhogrider.toml` 7000, `ronin.toml` 3500,
+    `characters/hero_form/*`). `MegaMonk` shares the Monk art (`BlueExportName="Monk"`) but is a
+    distinct `[CHARACTER.MegaMonk]`/`[ABILITY.MegaDeflect]` event variant — using its 20000 for
+    the standard Monk would be an unfaithful inference, so it is NOT adopted.
+  Conclusion: the standard champions' real cooldowns are resolved by Supercell's runtime balance
+  system and are not present in the decoded logic tables, so no corrected value can be sourced.
+  Boss Bandit's 3.0s and Goblinstein's deferred tether (R2) are the only data-grounded cases.
+  No code change; approximations left intact. Commit: (checklist-only)
 - [ ] **R4 — pyo3 advisory RUSTSEC-2025-0020 (low).** Currently recorded-not-fixed because the
   patched line is a breaking 0.22→0.24 major bump. Attempt the upgrade conservatively: bump
   pyo3 to the patched release, fix the API breakage across `src/env.rs`/`src/lib.rs`/the
