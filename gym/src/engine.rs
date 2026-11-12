@@ -59,6 +59,19 @@ const KB_REF_MASS: Fx = Fx::from_raw(crate::fixed::ONE / 2); // 0.5 tiles of "ma
 // [kb] Tornado pull speed toward the eye, per tick (4.0 tiles/s at 20 ticks/s).
 const TORNADO_PULL_PER_TICK: Fx = Fx::from_raw(crate::fixed::ONE / 5); // 0.2
 
+/// [M3] A spell that has been paid for and committed to a ground point but has not
+/// yet landed: it resolves `fuse` ticks later (its cast/travel window). Fixing the
+/// target point at cast time but delaying the hit is what gives fast troops a
+/// partial dodge chance in real CR. Part of reset() state so a (seed, action log)
+/// replays bit-identically.
+#[derive(Clone, Copy)]
+struct PendingCast {
+    owner: u8,
+    def: usize,
+    pos: V2,
+    fuse: i32,
+}
+
 /// A lingering area effect on the field (poison/rage/heal zone, etc.).
 struct AreaEffect {
     owner: u8,
@@ -82,6 +95,7 @@ pub struct Engine {
     pub entities: Vec<Entity>,
     pub projectiles: Vec<Projectile>,
     area_effects: Vec<AreaEffect>,
+    pending_casts: Vec<PendingCast>, // [M3] spells in their cast/travel window
     next_id: u32,
     pub elixir: [Fx; 2],
     pub deck: [Vec<usize>; 2], // 8 def ids each
@@ -109,6 +123,7 @@ impl Engine {
             entities: Vec::new(),
             projectiles: Vec::new(),
             area_effects: Vec::new(),
+            pending_casts: Vec::new(), // [M3]
             next_id: 1,
             elixir: [Fx(0); 2],
             deck: [Vec::new(), Vec::new()],
@@ -161,6 +176,7 @@ impl Engine {
         self.entities.clear();
         self.projectiles.clear();
         self.area_effects.clear();
+        self.pending_casts.clear(); // [M3]
         self.next_id = 1;
         self.elixir = [Fx::from_int(START_ELIXIR); 2];
         self.evo_charge[0].clear(); // [evo] evolutions start uncharged every match
@@ -447,15 +463,67 @@ impl Engine {
         }
     }
 
+    /// [M6] Deterministic per-count spawn formation offset for the k-th unit of a
+    /// `count`-unit group, in tiles relative to the deploy tile centre. Real CR
+    /// spawns grouped cards in compact clusters/arcs (pairs side-by-side, triangles,
+    /// 2x2 squares, small grids) rather than one straight row, which changes how a
+    /// group engages and gets splashed. The offsets are small (<~1 tile) so every
+    /// unit stays on/next to the deploy tile; the collision solver then settles them.
+    /// Pure fixed-point => fully deterministic.
     fn spawn_offset(k: i32, count: i32) -> V2 {
         if count <= 1 {
             return V2::new(Fx(0), Fx(0));
         }
-        // deterministic line spread, ~0.6 tile spacing, centered on the tile
-        let step = Fx::from_f64(0.6);
-        let i = (k - count / 2) as i64;
-        let row = (k % 2) as i64; // two staggered rows
-        V2::new(step.muli(i), step.muli(row).divi(2))
+        let k = k.rem_euclid(count);
+        // Unit-cell coordinates (in grid units) per formation; scaled by SP tiles.
+        let sp = Fx::from_f64(0.7); // spacing between neighbours (~1.4 collision radii)
+        let (ux, uy): (f64, f64) = match count {
+            2 => {
+                // side-by-side pair
+                [(-0.5, 0.0), (0.5, 0.0)][k as usize]
+            }
+            3 => {
+                // triangle: apex forward, two behind
+                [(0.0, 0.5), (-0.5, -0.4), (0.5, -0.4)][k as usize]
+            }
+            4 => {
+                // 2x2 square / diamond
+                [(-0.5, 0.5), (0.5, 0.5), (-0.5, -0.5), (0.5, -0.5)][k as usize]
+            }
+            5 => {
+                // diamond + centre
+                [(0.0, 0.0), (0.0, 0.8), (0.0, -0.8), (-0.8, 0.0), (0.8, 0.0)][k as usize]
+            }
+            6 => {
+                // 2 rows of 3 (a tight block / horde)
+                [
+                    (-1.0, 0.45),
+                    (0.0, 0.45),
+                    (1.0, 0.45),
+                    (-1.0, -0.45),
+                    (0.0, -0.45),
+                    (1.0, -0.45),
+                ][k as usize]
+            }
+            _ => {
+                // general case: centred square-ish grid, filled in index order.
+                let cols = {
+                    // smallest c with c*c >= count (compact grid)
+                    let mut c = 1i32;
+                    while c * c < count {
+                        c += 1;
+                    }
+                    c
+                };
+                let rows = (count + cols - 1) / cols;
+                let col = k % cols;
+                let row = k / cols;
+                let cx = (cols - 1) as f64 / 2.0;
+                let cy = (rows - 1) as f64 / 2.0;
+                (col as f64 - cx, row as f64 - cy)
+            }
+        };
+        V2::new(sp.mul(Fx::from_f64(ux)), sp.mul(Fx::from_f64(uy)))
     }
 
     // ---- champions ---- [champ]
@@ -602,7 +670,41 @@ impl Engine {
         (false, 0, 0)
     }
 
+    /// [M3] Schedule a spell: commit it to ground point `pos` now and let it land a
+    /// short, data-plausible number of ticks later (its cast/travel window). The
+    /// elixir was already spent at deploy time; only the *effect* is delayed, so
+    /// damage/crown/effect behaviour is unchanged -- just time-shifted, which gives a
+    /// fast troop a chance to walk out of the blast before it resolves.
     fn cast_spell(&mut self, owner: u8, def: usize, pos: V2) {
+        let fuse = self.spell_cast_fuse(def);
+        if fuse <= 0 {
+            self.resolve_spell(owner, def, pos);
+        } else {
+            self.pending_casts.push(PendingCast { owner, def, pos, fuse });
+        }
+    }
+
+    /// [M3] Cast/travel window in ticks for a spell. Faster projectiles land sooner
+    /// (Zap/Lightning ~0.25s, Fireball/Rocket ~0.5s), matching how dodgeable each
+    /// spell is in CR. Effect-only spells (Poison/Rage/Tornado/Graveyard) with no
+    /// projectile use a small default. Derived from a fixed "drop" distance so the
+    /// window scales with the card's own projectile speed (data-plausible).
+    fn spell_cast_fuse(&self, def: usize) -> i32 {
+        let d = &self.lib.defs[def];
+        const MIN_FUSE: i32 = 3;
+        const MAX_FUSE: i32 = 20;
+        let drop = Fx::from_f64(3.0); // tiles the spell "falls"/travels before impact
+        let f = if d.proj_speed.0 > 0 {
+            drop.div(d.proj_speed).to_int_floor() as i32
+        } else {
+            6 // ~0.3s for effect/spawn-only spells with no projectile
+        };
+        f.clamp(MIN_FUSE, MAX_FUSE)
+    }
+
+    /// [M3] Resolve a spell at its committed ground point (was `cast_spell`'s body):
+    /// the instant-damage projectile, lingering effect, and any unit spawns.
+    fn resolve_spell(&mut self, owner: u8, def: usize, pos: V2) {
         let d = &self.lib.defs[def];
         let (damage, radius, proj_speed, crown_pct, stun_ticks) =
             (d.damage, d.spell_radius, d.proj_speed, d.crown_pct, d.stun_ticks);
@@ -949,6 +1051,27 @@ impl Engine {
             }
         }
 
+        // [M3] 2a. resolve any spells whose cast/travel window has elapsed. Done
+        // before the spawner/area/snapshot passes so a landed spell's projectile,
+        // effect zone, and unit spawns are picked up this tick exactly as a fresh
+        // cast would be. Deterministic: index order in, index order out.
+        if !self.pending_casts.is_empty() {
+            let mut ready: Vec<PendingCast> = Vec::new();
+            let mut keep: Vec<PendingCast> = Vec::with_capacity(self.pending_casts.len());
+            for mut pc in self.pending_casts.drain(..) {
+                pc.fuse -= 1;
+                if pc.fuse <= 0 {
+                    ready.push(pc);
+                } else {
+                    keep.push(pc);
+                }
+            }
+            self.pending_casts = keep;
+            for pc in ready {
+                self.resolve_spell(pc.owner, pc.def, pc.pos);
+            }
+        }
+
         // 2b. spawner buildings periodically produce units
         let mut spawns: Vec<(u8, usize, V2)> = Vec::new();
         for i in 0..self.entities.len() {
@@ -1137,7 +1260,12 @@ impl Engine {
                             // line through the target and beyond, knocking ground enemies back.
                             let is_line = d.pierce;
                             let is_roll = d.pierce && d.roll_range.0 > 0;
-                            let homing = !d.commit_ground && !is_line && !is_roll;
+                            // [M2] dodge windows: by default a projectile commits to the
+                            // target's ground position at fire time (dodgeable) for
+                            // splash/area shots, and homes (tracks the entity) only for
+                            // single-target "tracking" shots. A per-card `homing` flag
+                            // (real CR `Homing`) overrides. Pierce/roll never home.
+                            let homing = proj_homes(d) && !is_line && !is_roll;
                             let roll_dir = if is_roll {
                                 tpos.sub(ipos).step_toward(Fx::from_int(1))
                             } else {
@@ -1221,7 +1349,12 @@ impl Engine {
                             // [proj]/[kb] line/pierce/roll shot flags (homing by default)
                             let is_line = d.pierce;
                             let is_roll = d.pierce && d.roll_range.0 > 0;
-                            let homing = !d.commit_ground && !is_line && !is_roll;
+                            // [M2] dodge windows: by default a projectile commits to the
+                            // target's ground position at fire time (dodgeable) for
+                            // splash/area shots, and homes (tracks the entity) only for
+                            // single-target "tracking" shots. A per-card `homing` flag
+                            // (real CR `Homing`) overrides. Pierce/roll never home.
+                            let homing = proj_homes(d) && !is_line && !is_roll;
                             let roll_dir = if is_roll {
                                 tpos.sub(ipos).step_toward(Fx::from_int(1))
                             } else {
@@ -1423,15 +1556,22 @@ impl Engine {
         };
 
         // 1. Keep the locked target if still valid and within leash.
+        // [M1] CR-plausible retarget rule: a unit holds its committed target while
+        // the target stays inside the unit's own aggro radius (its `sight`, or its
+        // attack `range` for long-range shooters) -- NOT an invented sight+2.5. Once
+        // the target leaves that radius the unit re-acquires (step 2), which for a
+        // lane pusher means falling back to marching on the nearest tower. Building
+        // targeters never drop a building objective; a building-PREFERRING unit that
+        // is only holding a troop re-scans so a building in sight can take priority.
         if let Some(tid) = e.target {
             if let Some(&tj) = snap.id2idx.get(&tid) {
                 if valid(tj) {
                     let gap = snap.surf_dist(ipos, tj);
                     let building = snap.is_tower[tj] || snap.is_building[tj];
-                    // building-targeters never drop their objective; others leash to sight+margin
                     let keep_forever = d.buildings_only && building;
-                    let leash = d.sight.max(d.range) + Fx::from_f64(2.5);
-                    if keep_forever || gap <= leash {
+                    let leash = d.sight.max(d.range);
+                    let prefer_rescan = d.prefers_buildings && !building;
+                    if (keep_forever || gap <= leash) && !prefer_rescan {
                         return Some(tj);
                     }
                 }
@@ -2059,13 +2199,20 @@ impl Engine {
                 self.last_crowns_for_ot = self.crowns; // enter overtime (sudden death)
             }
         } else if self.tick > reg && self.tick < end {
-            if self.crowns != self.last_crowns_for_ot {
-                self.finish_by_crowns(); // first tower in OT decides
+            // [M5] Sudden death: crowns were tied entering overtime, so the instant
+            // one player pulls AHEAD on crowns (destroys the first tower) they win.
+            // A simultaneous same-tick exchange that leaves crowns still tied does
+            // NOT end the match -- play continues until someone leads or time runs
+            // out (then the lowest-tower-HP fallback below decides).
+            if self.crowns[0] != self.crowns[1] {
+                self.finish_by_crowns(); // first player ahead in OT wins immediately
             }
         } else if self.tick >= end {
             if self.crowns[0] != self.crowns[1] {
                 self.finish_by_crowns();
             } else {
+                // [M5] final fallback only when OT expires still tied: lowest remaining
+                // tower HP loses; a dead-even board is a draw.
                 let a = self.min_tower_hp(0);
                 let b = self.min_tower_hp(1);
                 self.outcome = if a > b {
@@ -2088,6 +2235,16 @@ impl Engine {
             Outcome::Draw
         };
     }
+}
+
+/// [M2] Whether a card's ranged attack homes (tracks the target entity) vs. commits
+/// to a fixed ground point (dodgeable). An explicit per-card `homing` flag (the real
+/// CR `Homing` projectile field) wins; otherwise the default is: single-target
+/// "tracking" shots home, splash/area shots commit to ground. `commit_ground` still
+/// forces a ground commit. Pierce/roll shots are handled separately and never home.
+#[inline]
+fn proj_homes(d: &crate::cards::CardDef) -> bool {
+    d.homing.unwrap_or(!d.commit_ground && d.splash.0 == 0)
 }
 
 /// Scale an attack interval for rage (faster) / slow (slower). Integer math.
@@ -2778,5 +2935,234 @@ mod path_tests {
             trail
         };
         assert_eq!(run(), run(), "avoidance path diverged between replays");
+    }
+}
+
+// [M1-M6] Scenario tests for the medium-severity fidelity fixes.
+#[cfg(test)]
+mod medium_gap_tests {
+    use super::*;
+    use crate::arena::{DEPLOY_TICKS, OVERTIME_TICKS, REGULATION_TICKS};
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    // ---- M1: targeting leash is the card's own sight, not an invented sight+2.5 ----
+    #[test]
+    fn m1_leash_drops_target_beyond_sight() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(5, None);
+        let knight = eng.lib.id_of("knight").unwrap(); // sight 5.5, not buildings_only
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        let aid = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 11.5));
+        let eid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            if e.id == aid || e.id == eid {
+                e.deploy = 0;
+            }
+        }
+        // in sight (gap ~3.0 <= 5.5): the attacker acquires the enemy troop.
+        eng.step(noop());
+        let a = eng.entities.iter().find(|e| e.id == aid).unwrap();
+        assert_eq!(a.target, Some(eid), "enemy in sight should be acquired");
+
+        // push the enemy just beyond the knight's sight (gap ~6.1 > 5.5). The old
+        // sight+2.5 leash would have kept it; the CR-plausible sight leash drops it,
+        // so the attacker falls back to marching on a tower (target != the troop).
+        for e in eng.entities.iter_mut() {
+            if e.id == aid {
+                e.pos = at(9.0, 8.0);
+            }
+            if e.id == eid {
+                e.pos = at(9.0, 14.6);
+            }
+        }
+        eng.step(noop());
+        let a = eng.entities.iter().find(|e| e.id == aid).unwrap();
+        assert_ne!(a.target, Some(eid), "target beyond sight must be dropped");
+        assert!(a.target.is_some(), "attacker should re-acquire a march target (tower)");
+    }
+
+    // ---- M2: splash shots commit to ground (dodgeable); single-target shots home ----
+    fn first_proj_of(eng: &mut Engine, owner: u8) -> Option<(bool, bool)> {
+        for _ in 0..90 {
+            eng.step(noop());
+            if let Some(p) = eng.projectiles.iter().find(|p| p.owner == owner) {
+                return Some((p.homing, p.target.is_some()));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn m2_splash_shot_commits_to_ground() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(3, None);
+        let wiz = eng.lib.id_of("wizard").unwrap(); // splash 1.3 => dodgeable
+        eng.spawn_unit(0, wiz, at(3.5, 21.0)); // in range of enemy princess tower
+        let (homing, has_target) = first_proj_of(&mut eng, 0).expect("wizard fired");
+        assert!(!homing, "a splash/area shot commits to a ground point");
+        assert!(!has_target, "a committed shot tracks no entity");
+    }
+
+    #[test]
+    fn m2_single_target_shot_homes() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(3, None);
+        let musk = eng.lib.id_of("musketeer").unwrap(); // splash 0 => tracking shot
+        eng.spawn_unit(0, musk, at(3.5, 20.0));
+        let (homing, has_target) = first_proj_of(&mut eng, 0).expect("musketeer fired");
+        assert!(homing, "a single-target tracking shot homes");
+        assert!(has_target, "a homing shot tracks the target entity");
+    }
+
+    // ---- M3: a spell lands only after its cast/travel window (dodge chance) ----
+    #[test]
+    fn m3_spell_has_cast_travel_delay() {
+        // No towers (plain Engine::new) so only the spell can damage the dummy.
+        let mut eng = Engine::new(Library::default_lib());
+        let fid = eng.lib.id_of("fireball").unwrap();
+        let dummy = eng.lib.id_of("knight").unwrap(); // 1766 hp, survives one fireball
+        eng.spawn_unit(1, dummy, at(9.0, 10.0));
+        let did = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let hp0 = eng.entities.iter().find(|e| e.id == did).unwrap().hp;
+
+        eng.cast_spell(0, fid, at(9.0, 10.0));
+        assert!(eng.projectiles.is_empty(), "a cast spell is not yet in flight");
+        let fuse = eng.spell_cast_fuse(fid);
+        assert!(fuse >= 3, "fireball should have a real cast window");
+
+        // during the window the spell has NOT landed
+        for _ in 0..(fuse - 1) {
+            eng.step(noop());
+        }
+        let hp_mid = eng.entities.iter().find(|e| e.id == did).map(|e| e.hp).unwrap();
+        assert_eq!(hp_mid, hp0, "spell must not deal damage during its cast window");
+
+        // after the window it resolves and damages whoever is still at the point
+        eng.step(noop());
+        let hp_after = eng.entities.iter().find(|e| e.id == did).map(|e| e.hp).unwrap();
+        assert!(hp_after < hp0, "spell lands after the cast window");
+    }
+
+    // ---- M4: spawn uses each card's own deploy time; else the DEPLOY_TICKS fallback ----
+    #[test]
+    fn m4_per_card_deploy_time() {
+        let mut eng = Engine::new(Library::default_lib());
+        let golem = eng.lib.id_of("golem").unwrap(); // deploy_time 3.0s
+        eng.spawn_unit(0, golem, at(9.0, 5.0));
+        let e = eng.entities.last().unwrap();
+        assert_eq!(e.deploy, eng.lib.defs[golem].deploy_ticks);
+        assert_eq!(eng.lib.defs[golem].deploy_ticks, 3 * TICKS_PER_SECOND as i32);
+        // a 1.0s card resolves to exactly the named fallback constant
+        let knight = eng.lib.id_of("knight").unwrap();
+        assert_eq!(eng.lib.defs[knight].deploy_ticks, DEPLOY_TICKS);
+    }
+
+    // ---- M5: overtime is sudden death; HP is only the final expiry fallback ----
+    #[test]
+    fn m5_overtime_first_tower_wins() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None);
+        eng.crowns = [0, 0];
+        eng.tick = REGULATION_TICKS;
+        eng.resolve_time(); // tie -> enter overtime
+        assert_eq!(eng.outcome, Outcome::Running);
+        // first player to go ahead on crowns in OT wins immediately
+        eng.tick = REGULATION_TICKS + 40;
+        eng.crowns = [1, 0];
+        eng.resolve_time();
+        assert_eq!(eng.outcome, Outcome::Win0, "first tower in OT wins immediately");
+    }
+
+    #[test]
+    fn m5_overtime_simultaneous_exchange_continues() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None);
+        eng.crowns = [1, 1];
+        eng.tick = REGULATION_TICKS;
+        eng.resolve_time(); // enter overtime
+        // a same-tick exchange that leaves crowns tied does NOT end the match
+        eng.tick = REGULATION_TICKS + 40;
+        eng.crowns = [2, 2];
+        eng.resolve_time();
+        assert_eq!(eng.outcome, Outcome::Running, "tied exchange keeps sudden death alive");
+    }
+
+    #[test]
+    fn m5_overtime_expiry_falls_back_to_tower_hp() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None);
+        eng.crowns = [0, 0];
+        eng.tick = REGULATION_TICKS;
+        eng.resolve_time(); // enter overtime
+        // run out the clock still tied, but player 1 has a wounded tower
+        if let Some(e) = eng.entities.iter_mut().find(|e| e.is_tower && e.owner == 1) {
+            e.hp = 1;
+        }
+        eng.tick = REGULATION_TICKS + OVERTIME_TICKS;
+        eng.resolve_time();
+        assert_eq!(eng.outcome, Outcome::Win0, "lowest-tower-HP loses at time expiry");
+    }
+
+    // ---- M6: grouped spawns use 2D formations, not a single row ----
+    #[test]
+    fn m6_formations_are_clusters_not_lines() {
+        assert_eq!(Engine::spawn_offset(0, 1), V2::new(Fx(0), Fx(0)));
+        for &count in &[3i32, 4, 5, 6] {
+            let mut xs: Vec<i64> = Vec::new();
+            let mut ys: Vec<i64> = Vec::new();
+            let mut pts: Vec<(i64, i64)> = Vec::new();
+            for k in 0..count {
+                let o = Engine::spawn_offset(k, count);
+                xs.push(o.x.0);
+                ys.push(o.y.0);
+                pts.push((o.x.0, o.y.0));
+                // offsets stay compact (on/next to the deploy tile)
+                assert!(o.x.to_f64().abs() < 1.2 && o.y.to_f64().abs() < 1.2);
+            }
+            xs.sort();
+            xs.dedup();
+            ys.sort();
+            ys.dedup();
+            assert!(xs.len() >= 2, "count {count}: formation spans >1 column");
+            assert!(ys.len() >= 2, "count {count}: formation spans >1 row (not a line)");
+            // no two units share the exact same slot
+            let mut sorted = pts.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), pts.len(), "count {count}: slots must be distinct");
+        }
+    }
+
+    // ---- determinism guard across the new spell-delay + formation paths ----
+    #[test]
+    fn medium_changes_are_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let fid = eng.lib.id_of("fireball").unwrap();
+            let barbs = eng.lib.id_of("barbarians").unwrap();
+            eng.spawn_unit(1, barbs, at(9.0, 20.0));
+            eng.cast_spell(0, fid, at(9.0, 20.0));
+            let mut trail = Vec::new();
+            for _ in 0..40 {
+                eng.step(noop());
+                for e in &eng.entities {
+                    trail.push((e.id, e.pos.x.0, e.pos.y.0, e.hp));
+                }
+            }
+            trail
+        };
+        assert_eq!(run(), run(), "spell-delay + formation paths must replay identically");
     }
 }
