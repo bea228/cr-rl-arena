@@ -81,13 +81,23 @@ not implemented.
   second test). Tests: `battle_healer_heals_nearby_ally_and_self` (incl. a far ally that is
   NOT healed), `heal_aura_stops_when_healer_dies`. `cargo test --release`: 34/34 pass.
   Commit: 5372752
-- [ ] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
+- [x] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
   types in one card (Goblin Gang = 3 stab goblins + 3 spear goblins; Rascals = 1 Rascal Boy
   tank + 2 Rascal Girls ranged). The engine spawns `count` of ONE def. Add a
   secondary-spawn-on-deploy mechanism (e.g. a `deploy_spawn{card,count}` field, or reuse the
   spawn system at deploy) so these are faithful, then add the two cards to `cards.json` with
   real stats. Acceptance: deploying each yields the correct mixed group; a test verifies the
   counts/types. (Add the summon-only sub-units as `deployable:false`.)
+  DONE: added a `deploy_spawn{card,count}` field + the place_card branch that spawns the
+  secondary group one tile toward the owner's side. Both cards added with real stats from
+  spells_characters.csv + the sub-unit TOMLs (L11 ×2.56): `goblin_gang` (elixir 3, 3×
+  Goblin_Stab 202hp/125dmg melee + deploy_spawn 3× existing `spear_goblins`), `rascals`
+  (elixir 5, 1× RascalBoy 1833hp/218dmg tank + deploy_spawn 2× new `rascal_girl` 261hp/125dmg
+  ranged, `deployable:false`). Goblin Gang reuses the existing spear_goblins def (spawn_unit
+  spawns one entity per call, ignoring that def's own count). Tests:
+  `goblin_gang_deploys_three_stab_plus_three_spear`, `rascals_deploys_one_boy_plus_two_girls`,
+  `mix_card_deck_legality`, `mixed_deploy_is_deterministic`. `cargo test --release`: 38/38
+  pass. Commit: __PENDING__
 - [ ] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
   acquisition toward CR's real rules where the data supports it: correct retarget timing,
   and not dropping a committed target prematurely. Keep it deterministic (nearest valid;

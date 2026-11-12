@@ -1982,6 +1982,63 @@
    "targets": "ground",
    "deploy_time": 0.3
   },
+  "goblin_gang": {
+   "elixir": 3,
+   "type": "troop",
+   "count": 3,
+   "hp": 202,
+   "damage": 125,
+   "hit_speed": 1.1,
+   "load_time": 0.5,
+   "range": 0.5,
+   "speed": 2.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "deploy_spawn": {
+    "card": "spear_goblins",
+    "count": 3
+   }
+  },
+  "rascals": {
+   "elixir": 5,
+   "type": "troop",
+   "count": 1,
+   "hp": 1833,
+   "damage": 218,
+   "hit_speed": 1.5,
+   "load_time": 1.1,
+   "range": 0.8,
+   "speed": 1.0,
+   "collision_radius": 0.75,
+   "mass": 1.0,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 1.0,
+   "deploy_spawn": {
+    "card": "rascal_girl",
+    "count": 2
+   }
+  },
+  "rascal_girl": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 261,
+   "damage": 125,
+   "hit_speed": 1.0,
+   "load_time": 0.5,
+   "range": 5.0,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.2,
+   "sight": 5.5,
+   "targets": "both",
+   "projectile_speed": 9.0,
+   "deploy_time": 1.0
+  },
   "bomb_tower": {
    "elixir": 4,
    "type": "building",

@@ -183,6 +183,11 @@ pub struct CardDef {
     pub death_count: i32,
     pub death_name: Option<String>,
     pub death_id: Option<usize>,
+    // [mix] on DEPLOY, also spawn `deploy_spawn_count` of `deploy_spawn_name` beside the
+    // primary cluster -- for mixed-composition cards (Goblin Gang, Rascals). Linked name->id.
+    pub deploy_spawn_count: i32,
+    pub deploy_spawn_name: Option<String>,
+    pub deploy_spawn_id: Option<usize>,
     // [rev] revive-on-death: when this unit dies from lifetime expiry, hatch one
     // `revive_name`/`revive_as` at `revive_hp_pct`% of that card's hp, exactly once
     // (used by the Phoenix egg -> reborn Phoenix). Linked name->id in the post-load pass.
@@ -381,6 +386,7 @@ struct RawCard {
     shield: Option<i64>,
     spawn: Option<RawSpawn>,
     death_spawn: Option<RawDeath>,
+    deploy_spawn: Option<RawSpawn>, // [mix] secondary units spawned on deploy (reuses card/count)
     revive: Option<RawRevive>, // [rev]
     death_damage: Option<i64>,  // [edep]
     death_radius: Option<f64>,  // [edep]
@@ -571,6 +577,10 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         death_count: r.death_spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
         death_name: r.death_spawn.as_ref().map(|s| s.card.clone()),
         death_id: None,
+        // [mix] secondary deploy-spawn (mixed-composition cards)
+        deploy_spawn_count: r.deploy_spawn.as_ref().and_then(|s| s.count).unwrap_or(1).max(1) as i32,
+        deploy_spawn_name: r.deploy_spawn.as_ref().map(|s| s.card.clone()),
+        deploy_spawn_id: None,
         // [rev] revive spec (resolved to id in the post-load linking pass below)
         revive_name: r.revive.as_ref().map(|s| s.card.clone()),
         revive_as: None,
@@ -687,6 +697,10 @@ impl Library {
             }
             if let Some(n) = defs[i].death_name.clone() {
                 defs[i].death_id = index.get(&n).copied();
+            }
+            // [mix] link the secondary deploy-spawn (Goblin Gang / Rascals)
+            if let Some(n) = defs[i].deploy_spawn_name.clone() {
+                defs[i].deploy_spawn_id = index.get(&n).copied();
             }
             // [evo] resolve the evolved-variant name to its def id
             if let Some(n) = defs[i].evolved_name.clone() {

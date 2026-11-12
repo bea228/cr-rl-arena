@@ -414,6 +414,22 @@ impl Engine {
             let off = Self::spawn_offset(k, count);
             self.spawn_unit(player as u8, spawn_def, V2::new(pos.x + off.x, pos.y + off.y));
         }
+        // [mix] mixed-composition cards (Goblin Gang, Rascals): spawn the secondary unit
+        // type beside the primary cluster, offset down-lane so the groups don't overlap.
+        let (deploy_sid, deploy_cnt) = {
+            let d = &self.lib.defs[spawn_def];
+            (d.deploy_spawn_id, d.deploy_spawn_count.max(1))
+        };
+        if let Some(sid) = deploy_sid {
+            // nudge the second group one tile toward the owner's own side so the ranged
+            // backers sit behind the melee front without stacking on them.
+            let back = if player == 0 { Fx::from_int(-1) } else { Fx::from_int(1) };
+            let base = V2::new(pos.x, pos.y + back);
+            for k in 0..deploy_cnt {
+                let off = Self::spawn_offset(k, deploy_cnt);
+                self.spawn_unit(player as u8, sid, V2::new(base.x + off.x, base.y + off.y));
+            }
+        }
         // [charge] Mega Knight deals area damage where it lands on deploy.
         if land_damage > 0 {
             self.projectiles
@@ -3915,5 +3931,69 @@ mod heal_tests {
         }
         let after = eng.entities.iter().find(|e| e.id == ally_id).unwrap().hp;
         assert_eq!(after, before, "no healer => no heal");
+    }
+}
+
+// [mix] A4: mixed-composition deploys (Goblin Gang, Rascals).
+#[cfg(test)]
+mod mix_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+
+    #[test]
+    fn goblin_gang_deploys_three_stab_plus_three_spear() {
+        let mut eng = Engine::new(Library::default_lib());
+        let gg = eng.lib.id_of("goblin_gang").unwrap();
+        let sg = eng.lib.id_of("spear_goblins").unwrap();
+        eng.place_card(0, gg, at(9.0, 6.0));
+        let stab = eng.entities.iter().filter(|e| e.def == gg).count();
+        let spear = eng.entities.iter().filter(|e| e.def == sg).count();
+        assert_eq!(stab, 3, "3 stab goblins (the primary cluster)");
+        assert_eq!(spear, 3, "3 spear goblins (the secondary deploy-spawn)");
+        assert_eq!(eng.entities.len(), 6, "exactly 6 units, nothing else");
+        // every unit belongs to the deploying player
+        assert!(eng.entities.iter().all(|e| e.owner == 0));
+    }
+
+    #[test]
+    fn rascals_deploys_one_boy_plus_two_girls() {
+        let mut eng = Engine::new(Library::default_lib());
+        let r = eng.lib.id_of("rascals").unwrap();
+        let girl = eng.lib.id_of("rascal_girl").unwrap();
+        eng.place_card(0, r, at(9.0, 6.0));
+        let boys = eng.entities.iter().filter(|e| e.def == r).count();
+        let girls = eng.entities.iter().filter(|e| e.def == girl).count();
+        assert_eq!(boys, 1, "1 Rascal Boy tank");
+        assert_eq!(girls, 2, "2 Rascal Girls");
+        assert_eq!(eng.entities.len(), 3);
+    }
+
+    // The gang cards are deck-legal; the summon-only sub-unit is not.
+    #[test]
+    fn mix_card_deck_legality() {
+        let lib = Library::default_lib();
+        let legal = |n: &str| lib.deployable.contains(&lib.id_of(n).unwrap());
+        assert!(legal("goblin_gang"), "Goblin Gang is deck-legal");
+        assert!(legal("rascals"), "Rascals is deck-legal");
+        assert!(!legal("rascal_girl"), "rascal_girl is summon-only");
+    }
+
+    #[test]
+    fn mixed_deploy_is_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let gg = eng.lib.id_of("goblin_gang").unwrap();
+            eng.place_card(0, gg, at(9.0, 6.0));
+            let mut v: Vec<(usize, i64, i64)> =
+                eng.entities.iter().map(|e| (e.def, e.pos.x.0, e.pos.y.0)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run(), "mixed deploy must replay identically");
     }
 }
