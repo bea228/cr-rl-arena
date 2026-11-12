@@ -107,8 +107,24 @@ Everything below is the original gap list; items above are now resolved.
 
 ## 3. Card roster & per-card mechanics — the largest gap
 
-The gym ships **18 generic cards**; real CR has ~120, most with unique logic that
-*is* the strategy. Entire mechanic classes are absent:
+- `[RESOLVED 2026-11-12]` **Roster expanded to 120 cards** (was 85). The 2026-11-12
+  pass added the remaining standard in-use ladder cards straight from the decoded
+  tables (Balloon, Giant Skeleton, Princess, Lava Hound+pups, Mega Minion, Hunter,
+  Royal Recruits, Night Witch, Zappies, Electro Dragon, Firecracker, Skeleton
+  Barrel, Skeleton Dragons, Battle Healer, Minion Giant, Goblin Demolisher, Goblin
+  Machine, Berserker, Ronin, the Champions Mighty Miner / Monk / Little Prince /
+  Boss Bandit, the buildings Bomb Tower / Barbarian Hut / Tesla / Furnace / Goblin
+  Cage, and the spells Earthquake / Barbarian Barrel / Royal Delivery), each with
+  real L11 stats and its core mechanic (death bombs, spawns, chains, shields,
+  dashes, ramp). Deliberately skipped (unmappable to the current single-def model
+  or using unmodelled mechanics): mixed-composition cards (Goblin Gang, Rascals),
+  Mother Witch / Goblin Curse (curse-to-pig), Clone, Suspicious Bush (invis bush),
+  Goblinstein (two-part champ), and all Super/Party/Chess event variants. Champion
+  activated abilities for the new champions are not yet modelled (combat stats are).
+  The bullets below are the ORIGINAL gap list — most are since resolved.
+
+The gym originally shipped **18 generic cards**; real CR has ~120, most with unique
+logic that *is* the strategy. Entire mechanic classes were absent:
 
 - `[MISSING]` **H — Death spawns / splits:** Golem→golemites, Lava Hound→pups,
   Giant Skeleton bomb, Balloon death bomb, Goblin Barrel, Skeleton Barrel,
