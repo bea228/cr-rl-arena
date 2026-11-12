@@ -19,6 +19,7 @@ from ._core import (  # noqa: F401
     RIVER_HALF,
     BRIDGE_HALF,
     BRIDGES,
+    ABILITY_SLOT,
 )
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "OVERTIME_TICKS",
     "RIVER_Y",
     "BRIDGES",
+    "ABILITY_SLOT",
 ]
 __version__ = "0.1.0"

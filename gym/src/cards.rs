@@ -25,11 +25,13 @@ pub enum Targets {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpellEffect {
     None,
-    Poison, // damage-over-time zone (enemies)
-    Rage,   // speed/attack buff zone (allies)
-    Heal,   // heal-over-time zone (allies)
-    Freeze, // area freeze (enemies, duration)
-    Slow,   // area slow (enemies, duration)
+    Poison,  // damage-over-time zone (enemies)
+    Rage,    // speed/attack buff zone (allies)
+    Heal,    // heal-over-time zone (allies)
+    Freeze,  // area freeze (enemies, duration)
+    Slow,    // area slow (enemies, duration)
+    Tornado, // [kb] pull enemies toward center over a duration + small damage-over-time
+    Spawn,   // [edep] periodically summon units over a radius (Graveyard)
 }
 
 impl SpellEffect {
@@ -40,7 +42,32 @@ impl SpellEffect {
             "heal" => SpellEffect::Heal,
             "freeze" => SpellEffect::Freeze,
             "slow" => SpellEffect::Slow,
+            "tornado" => SpellEffect::Tornado, // [kb]
+            "spawn" => SpellEffect::Spawn, // [edep]
             _ => SpellEffect::None,
+        }
+    }
+}
+
+/// [champ] A champion's activatable ability, reusing existing engine systems.
+///   Cloak  — self becomes untargetable + gains a rage (attack/move) boost.
+///   Summon — spawns N of a unit (e.g. skeletons) around the champion.
+///   Dash   — teleports toward the nearest enemy, damaging a line of enemies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AbilityKind {
+    None,
+    Cloak,
+    Summon,
+    Dash,
+}
+
+impl AbilityKind {
+    fn parse(s: &str) -> AbilityKind {
+        match s {
+            "cloak" => AbilityKind::Cloak,
+            "summon" => AbilityKind::Summon,
+            "dash" => AbilityKind::Dash,
+            _ => AbilityKind::None,
         }
     }
 }
@@ -92,15 +119,38 @@ pub struct CardDef {
     pub splash: Fx,
     pub proj_speed: Fx, // tiles per tick, 0 = instant
     pub buildings_only: bool,
+    pub invisible: bool, // [inv] permanently invisible (Royal Ghost); untargetable unless revealed
     pub jumps_river: bool,
     pub lifetime_ticks: i32, // -1 = infinite
     pub spell_radius: Fx,
     pub crown_pct: i32,
     pub stun_ticks: i32,
+    // [kb] knockback & pull
+    pub knockback: Fx,   // [kb] push distance (tiles) this card's attack/spell impact applies
+    pub roll_range: Fx,  // [kb] travel distance (tiles) of a rolling-line projectile (0 = not rolling)
     pub charge: Option<Charge>,
+    // [charge] Dash / jump (leap) variants: Bandit dash, Mega Knight jump.
+    pub dash_min: Fx,            // target must be at least this far to trigger a leap
+    pub dash_max: Fx,            // ...and at most this far
+    pub dash_speed: Fx,          // tiles per tick while leaping (0 = no dash)
+    pub dash_invuln: bool,       // untargetable/invulnerable mid-leap (Bandit)
+    pub dash_damage_mult: i32,   // single-target strike multiplier on arrival (Bandit 2x)
+    pub dash_cooldown_ticks: i32,// ticks between leaps (Mega Knight periodic jump)
+    pub land_damage: i32,        // area damage dealt on deploy AND on leap landing (Mega Knight)
+    pub land_radius: Fx,         // radius of that landing/deploy area damage
+    // [charge] On-hit melee riders (Ram Rider snare, Battle Ram knockback + deploy-on-connect)
+    pub snare_ticks: i32,        // apply this many ticks of snare (reuses slow) to the hit target
+    pub knockback_tiles: Fx,     // push the hit target back this far
+    pub dies_on_hit: bool,       // self-destruct on landing a hit (Battle Ram -> death-spawn)
+    // [charge] On-death area effect (Lumberjack drops a Rage zone)
+    pub death_effect: SpellEffect,
+    pub death_effect_ticks: i32,
+    pub death_effect_radius: Fx,
+    pub death_effect_power: i32,
     pub crown_value: i32, // towers: crowns awarded when destroyed
     pub starts_dormant: bool,
     pub deployable: bool,  // false = summoned only (golemite, hut spawns), not deck-legal
+    pub deploy_anywhere: bool, // [edep] placeable on either side (Miner, Goblin Drill)
     pub deploy_ticks: i32, // time from placement to becoming active
     pub shield: i32,       // starting shield hp absorbed before body hp
     // spawner building: periodically produces `spawn_count` of `spawn_name`
@@ -112,11 +162,74 @@ pub struct CardDef {
     pub death_count: i32,
     pub death_name: Option<String>,
     pub death_id: Option<usize>,
+    // [rev] revive-on-death: when this unit dies from lifetime expiry, hatch one
+    // `revive_name`/`revive_as` at `revive_hp_pct`% of that card's hp, exactly once
+    // (used by the Phoenix egg -> reborn Phoenix). Linked name->id in the post-load pass.
+    pub revive_name: Option<String>,
+    pub revive_as: Option<usize>,
+    pub revive_hp_pct: i32,
+    // [edep] on-death area burst damage (Goblin Drill)
+    pub death_damage: i32,
+    pub death_radius: Fx,
     // spell lingering/applied effect
     pub effect: SpellEffect,
     pub effect_ticks: i32,    // duration
     pub effect_interval: i32, // ticks between DoT/heal applications
     pub effect_power: i32,    // damage or heal per application
+    // [proj] --- projectile-behavior extensions ---
+    pub commit_ground: bool,      // [proj] lobbed/non-homing: shot flies to a fixed point (dodgeable)
+    pub chain_count: i32,         // [proj] extra enemies a hit arcs to (Electro Wizard/Spirit)
+    pub chain_radius: Fx,         // [proj] max chain jump distance
+    pub pierce: bool,             // [proj] shot pierces every enemy along a line (Magic Archer)
+    pub line_range: Fx,           // [proj] distance a pierce shot travels, per leg
+    pub boomerang: bool,          // [proj] pierce shot flies out then returns (Executioner)
+    pub on_hit_slow_ticks: i32,   // [proj] a landed troop hit slows the victim (Ice Wizard)
+    pub on_hit_freeze_ticks: i32, // [proj] a landed troop hit stuns/freezes the victim (Ice Spirit, Electro)
+    pub spell_max_targets: i32,   // [proj] spell strikes only the K highest-HP enemies (Lightning)
+    // [evo] evolution link: a base card charges by being cycled `evo_cycles`
+    // times; the next play then spawns `evolved_id`'s def and resets the count.
+    // (Evo Royal Giant's knockback shots reuse the shared [kb] `knockback` field above.)
+    pub evolved_name: Option<String>, // [evo]
+    pub evolved_id: Option<usize>,    // [evo]
+    pub evo_cycles: i32,              // [evo] cycles to charge (0 = not an evolution)
+    // [ramp] ramp-up / charge-shot / siege fields
+    pub ramp_damage: Vec<i32>,   // per-stage per-hit damage while locked on ONE target (empty = no ramp)
+    pub ramp_stage_ticks: i32,   // ticks of continuous lock before advancing one ramp stage
+    pub charge_shot_ticks: i32,  // reload/charge time for a charge-shot weapon (Sparky); 0 = normal
+    pub min_range: Fx,           // dead zone: cannot target/hit anything closer than this (Mortar); 0 = none
+    pub prefers_buildings: bool, // soft building/tower target priority on acquisition (X-Bow)
+    // [rfl] Reflect (Electro Giant): when hit by an attacker inside reflect_radius,
+    // zap it back for reflect_damage + reflect_stun_ticks stun, at most once per
+    // reflect_interval_ticks. All default 0 => no reflect.
+    pub reflect_damage: i32,
+    pub reflect_radius: Fx,
+    pub reflect_stun_ticks: i32,
+    pub reflect_interval_ticks: i32,
+    // [rfl] Pull (Fisherman): on each landed hit, hook pulls the target toward this
+    // unit by pull_tiles (or pulls this unit toward the target when it's a
+    // building/tower). Default 0 => no pull.
+    pub pull_tiles: Fx,
+    // [eco] economy building (Elixir Collector/Pump): periodically grants its
+    // owner elixir instead of spawning a unit. 0 = not an elixir producer.
+    pub elixir_per_pulse: i32,
+    pub elixir_pulse_ticks: i32,
+    // [eco] kamikaze: lands its (splash + stun) hit once on contact, then dies
+    // (Fire/Ice/Electro Spirit, Wall Breakers).
+    pub suicide: bool,
+    // [eco] Mirror: on play, replays the owner's LAST-deployed card at +1 elixir.
+    pub is_mirror: bool,
+    // [champ] champion troop + activatable ability spec
+    pub is_champion: bool,
+    pub ability: AbilityKind,
+    pub ability_cost: i32,            // elixir to activate
+    pub ability_cooldown_ticks: i32, // reuse delay after activation
+    pub ability_duration_ticks: i32, // Cloak: untargetable/boost duration
+    pub ability_damage: i32,         // Dash: damage per enemy in the line
+    pub ability_count: i32,          // Summon: number of units spawned
+    pub ability_radius: Fx,          // Dash: line hit radius / Summon: spread
+    pub ability_range: Fx,           // Dash: max dash reach (tiles)
+    pub ability_spawn_name: Option<String>, // Summon: unit to spawn
+    pub ability_spawn_id: Option<usize>,
 }
 
 // ---- raw JSON shapes ----
@@ -126,6 +239,28 @@ struct RawCharge {
     min_distance: f64,
     speed_mult: f64,
     damage_mult: f64,
+}
+
+// [charge] Dash / jump config block.
+#[derive(Deserialize, Default)]
+struct RawDash {
+    min: f64,
+    max: f64,
+    speed: f64,             // tiles per second
+    invuln: Option<bool>,
+    damage_mult: Option<f64>,
+    cooldown: Option<f64>,  // seconds between leaps
+    land_damage: Option<i64>,
+    land_radius: Option<f64>,
+}
+
+// [charge] On-death area effect (Lumberjack Rage).
+#[derive(Deserialize, Default)]
+struct RawDeathArea {
+    effect: String,
+    radius: Option<f64>,
+    duration: Option<f64>,  // seconds
+    power: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -139,6 +274,27 @@ struct RawSpawn {
 struct RawDeath {
     card: String,
     count: Option<i64>,
+}
+
+// [rev] revive spec: hatch `card` at `hp_pct`% hp on lifetime-expiry death (one-shot).
+#[derive(Deserialize, Default)]
+struct RawRevive {
+    card: String,
+    hp_pct: Option<i64>,
+}
+
+// [champ] raw champion ability spec
+#[derive(Deserialize, Default)]
+struct RawAbility {
+    kind: String,
+    cost: Option<i64>,
+    cooldown: Option<f64>, // seconds
+    duration: Option<f64>, // seconds (Cloak)
+    damage: Option<i64>,   // Dash
+    count: Option<i64>,    // Summon
+    summon: Option<String>,// Summon unit name
+    range: Option<f64>,    // Dash reach (tiles)
+    radius: Option<f64>,   // Dash line radius / Summon spread (tiles)
 }
 
 #[derive(Deserialize, Default)]
@@ -161,22 +317,70 @@ struct RawCard {
     splash_radius: Option<f64>,
     projectile_speed: Option<f64>,
     target_buildings_only: Option<bool>,
+    invisible: Option<bool>, // [inv]
     jumps_river: Option<bool>,
     lifetime: Option<f64>,
     radius: Option<f64>,
     crown_tower_damage_pct: Option<i64>,
     stun: Option<f64>,
+    knockback: Option<f64>,   // [kb] push distance in tiles
+    pierce: Option<bool>,     // [kb] rolling-pierce attack/spell
+    roll_range: Option<f64>,  // [kb] rolling-line travel distance in tiles
     charge: Option<RawCharge>,
+    // [charge] new mechanic inputs (all optional -> existing cards still load)
+    // (melee knockback reuses the shared [kb] `knockback` JSON key above)
+    dash: Option<RawDash>,
+    snare: Option<f64>,       // seconds of snare applied on hit
+    dies_on_hit: Option<bool>,
+    death_area: Option<RawDeathArea>,
     starts_dormant: Option<bool>,
     deploy_time: Option<f64>,
     shield: Option<i64>,
     spawn: Option<RawSpawn>,
     death_spawn: Option<RawDeath>,
+    revive: Option<RawRevive>, // [rev]
+    death_damage: Option<i64>,  // [edep]
+    death_radius: Option<f64>,  // [edep]
     effect: Option<String>,
     effect_duration: Option<f64>,
     effect_interval: Option<f64>,
     effect_power: Option<i64>,
     deployable: Option<bool>,
+    // [proj] projectile-behavior extensions (all optional; defaults keep old cards intact)
+    commit_ground: Option<bool>,
+    chain_count: Option<i64>,
+    chain_radius: Option<f64>,
+    line_range: Option<f64>,
+    boomerang: Option<bool>,
+    on_hit_slow: Option<f64>,   // seconds
+    on_hit_freeze: Option<f64>, // seconds
+    spell_max_targets: Option<i64>,
+    evolved: Option<String>, // [evo] name of this card's evolved variant
+    evo_cycles: Option<i64>, // [evo] cycles required to charge the evolution
+    // [ramp] ramp-up / charge-shot / siege fields
+    ramp_damage: Option<Vec<i64>>, // per-stage per-hit damage (Inferno)
+    ramp_stage_time: Option<f64>,  // seconds per ramp stage
+    charge_time: Option<f64>,      // seconds to charge a charge-shot (Sparky)
+    min_range: Option<f64>,        // dead-zone min range in tiles (Mortar)
+    prefers_buildings: Option<bool>, // building/tower target priority (X-Bow)
+    // [rfl] reflect (Electro Giant)
+    reflect_damage: Option<i64>,
+    reflect_radius: Option<f64>,
+    reflect_stun: Option<f64>,     // seconds
+    reflect_interval: Option<f64>, // seconds
+    // [rfl] pull (Fisherman)
+    pull_distance: Option<f64>,    // tiles
+    deploy_anywhere: Option<bool>, // [edep]
+    // [eco] economy building: elixir granted per pulse, and seconds between pulses
+    elixir_per_pulse: Option<i64>,
+    elixir_pulse_interval: Option<f64>,
+    // [eco] kamikaze unit: one on-contact hit, then die
+    suicide: Option<bool>,
+    // [eco] Mirror card marker
+    mirror: Option<bool>,
+    // [champ]
+    champion: Option<bool>,
+    ability: Option<RawAbility>,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +409,38 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         damage_mult: c.damage_mult.round() as i32,
     });
     let lifetime = r.lifetime.unwrap_or(0.0);
+    // [charge] resolve dash / jump block (tiles/s -> tiles/tick, s -> ticks)
+    let dash = r.dash.as_ref();
+    let dash_speed = dash.map(|c| per_tick(c.speed)).unwrap_or(Fx(0));
+    let dash_min = dash.map(|c| Fx::from_f64(c.min)).unwrap_or(Fx(0));
+    let dash_max = dash.map(|c| Fx::from_f64(c.max)).unwrap_or(Fx(0));
+    let dash_invuln = dash.and_then(|c| c.invuln).unwrap_or(false);
+    let dash_damage_mult = dash.and_then(|c| c.damage_mult).map(|m| m.round() as i32).unwrap_or(1).max(1);
+    let dash_cooldown_ticks = dash.and_then(|c| c.cooldown).map(secs_to_ticks).unwrap_or(0);
+    let land_damage = dash.and_then(|c| c.land_damage).unwrap_or(0) as i32;
+    let land_radius = Fx::from_f64(dash.and_then(|c| c.land_radius).unwrap_or(0.0));
+    // [charge] death-area effect (Lumberjack Rage drop)
+    let da = r.death_area.as_ref();
+    let death_effect = da.map(|a| SpellEffect::parse(&a.effect)).unwrap_or(SpellEffect::None);
+    let death_effect_ticks = da.and_then(|a| a.duration).map(secs_to_ticks).unwrap_or(0);
+    let death_effect_radius = Fx::from_f64(da.and_then(|a| a.radius).unwrap_or(0.0));
+    let death_effect_power = da.and_then(|a| a.power).unwrap_or(0) as i32;
+    // [champ] resolve the ability spec (seconds -> ticks; names linked later)
+    let (ab_kind, ab_cost, ab_cd, ab_dur, ab_dmg, ab_count, ab_radius, ab_range, ab_spawn) =
+        match r.ability.as_ref() {
+            Some(a) => (
+                AbilityKind::parse(&a.kind),
+                a.cost.unwrap_or(0) as i32,
+                a.cooldown.map(secs_to_ticks).unwrap_or(0),
+                a.duration.map(secs_to_ticks).unwrap_or(0),
+                a.damage.unwrap_or(0) as i32,
+                a.count.unwrap_or(1).max(1) as i32,
+                Fx::from_f64(a.radius.unwrap_or(1.0)),
+                Fx::from_f64(a.range.unwrap_or(0.0)),
+                a.summon.clone(),
+            ),
+            None => (AbilityKind::None, 0, 0, 0, 0, 1, Fx::from_f64(1.0), Fx(0), None),
+        };
     CardDef {
         name: name.to_string(),
         ctype,
@@ -228,15 +464,36 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         splash: Fx::from_f64(r.splash_radius.unwrap_or(0.0)),
         proj_speed: per_tick(r.projectile_speed.unwrap_or(0.0)),
         buildings_only: r.target_buildings_only.unwrap_or(false),
+        invisible: r.invisible.unwrap_or(false), // [inv]
         jumps_river: r.jumps_river.unwrap_or(false),
         lifetime_ticks: if lifetime > 0.0 { secs_to_ticks(lifetime) } else { -1 },
         spell_radius: Fx::from_f64(r.radius.unwrap_or(0.0)),
         crown_pct: r.crown_tower_damage_pct.unwrap_or(100) as i32,
         stun_ticks: r.stun.map(secs_to_ticks).unwrap_or(0),
+        knockback: Fx::from_f64(r.knockback.unwrap_or(0.0)), // [kb]
+        pierce: r.pierce.unwrap_or(false),                   // [kb]
+        roll_range: Fx::from_f64(r.roll_range.unwrap_or(0.0)), // [kb]
         charge,
+        // [charge] new mechanic fields
+        dash_min,
+        dash_max,
+        dash_speed,
+        dash_invuln,
+        dash_damage_mult,
+        dash_cooldown_ticks,
+        land_damage,
+        land_radius,
+        snare_ticks: r.snare.map(secs_to_ticks).unwrap_or(0),
+        knockback_tiles: Fx::from_f64(r.knockback.unwrap_or(0.0)),
+        dies_on_hit: r.dies_on_hit.unwrap_or(false),
+        death_effect,
+        death_effect_ticks,
+        death_effect_radius,
+        death_effect_power,
         crown_value: 0,
         starts_dormant: r.starts_dormant.unwrap_or(false),
         deployable: r.deployable.unwrap_or(true),
+        deploy_anywhere: r.deploy_anywhere.unwrap_or(false), // [edep]
         deploy_ticks: r.deploy_time.map(secs_to_ticks).unwrap_or(TICKS_PER_SECOND as i32),
         shield: r.shield.unwrap_or(0) as i32,
         spawn_count: r.spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
@@ -251,10 +508,66 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         death_count: r.death_spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
         death_name: r.death_spawn.as_ref().map(|s| s.card.clone()),
         death_id: None,
+        // [rev] revive spec (resolved to id in the post-load linking pass below)
+        revive_name: r.revive.as_ref().map(|s| s.card.clone()),
+        revive_as: None,
+        revive_hp_pct: r.revive.as_ref().and_then(|s| s.hp_pct).unwrap_or(100) as i32,
+        death_damage: r.death_damage.unwrap_or(0) as i32, // [edep]
+        death_radius: Fx::from_f64(r.death_radius.unwrap_or(0.0)), // [edep]
         effect: r.effect.as_deref().map(SpellEffect::parse).unwrap_or(SpellEffect::None),
         effect_ticks: r.effect_duration.map(secs_to_ticks).unwrap_or(0),
         effect_interval: r.effect_interval.map(secs_to_ticks).unwrap_or(TICKS_PER_SECOND as i32),
         effect_power: r.effect_power.unwrap_or(0) as i32,
+        // [proj] projectile-behavior extensions
+        commit_ground: r.commit_ground.unwrap_or(false),
+        chain_count: r.chain_count.unwrap_or(0).max(0) as i32,
+        chain_radius: Fx::from_f64(r.chain_radius.unwrap_or(3.0)),
+        line_range: Fx::from_f64(r.line_range.unwrap_or(0.0)),
+        boomerang: r.boomerang.unwrap_or(false),
+        on_hit_slow_ticks: r.on_hit_slow.map(secs_to_ticks).unwrap_or(0),
+        on_hit_freeze_ticks: r.on_hit_freeze.map(secs_to_ticks).unwrap_or(0),
+        spell_max_targets: r.spell_max_targets.unwrap_or(0).max(0) as i32,
+        evolved_name: r.evolved.clone(), // [evo]
+        evolved_id: None,                // [evo] linked after all names are indexed
+        evo_cycles: r.evo_cycles.unwrap_or(0) as i32, // [evo]
+        // [ramp] ramp-up / charge-shot / siege fields
+        ramp_damage: r
+            .ramp_damage
+            .as_ref()
+            .map(|v| v.iter().map(|&x| x as i32).collect())
+            .unwrap_or_default(),
+        ramp_stage_ticks: r.ramp_stage_time.map(secs_to_ticks).unwrap_or(0),
+        charge_shot_ticks: r.charge_time.map(secs_to_ticks).unwrap_or(0),
+        min_range: Fx::from_f64(r.min_range.unwrap_or(0.0)),
+        prefers_buildings: r.prefers_buildings.unwrap_or(false),
+        // [rfl] reflect: default 0 (no reflect) so every existing card loads unchanged.
+        reflect_damage: r.reflect_damage.unwrap_or(0) as i32,
+        reflect_radius: Fx::from_f64(r.reflect_radius.unwrap_or(0.0)),
+        reflect_stun_ticks: r.reflect_stun.map(secs_to_ticks).unwrap_or(0),
+        // default a half-second pulse interval when a reflecter omits it.
+        reflect_interval_ticks: r
+            .reflect_interval
+            .map(secs_to_ticks)
+            .unwrap_or(TICKS_PER_SECOND as i32 / 2),
+        // [rfl] pull: default 0 (no pull).
+        pull_tiles: Fx::from_f64(r.pull_distance.unwrap_or(0.0)),
+        // [eco] economy + suicide + mirror fields (default 0/false => unchanged behavior)
+        elixir_per_pulse: r.elixir_per_pulse.unwrap_or(0) as i32,
+        elixir_pulse_ticks: r.elixir_pulse_interval.map(secs_to_ticks).unwrap_or(0),
+        suicide: r.suicide.unwrap_or(false),
+        is_mirror: r.mirror.unwrap_or(false),
+        // [champ]
+        is_champion: r.champion.unwrap_or(false),
+        ability: ab_kind,
+        ability_cost: ab_cost,
+        ability_cooldown_ticks: ab_cd,
+        ability_duration_ticks: ab_dur,
+        ability_damage: ab_dmg,
+        ability_count: ab_count,
+        ability_radius: ab_radius,
+        ability_range: ab_range,
+        ability_spawn_name: ab_spawn,
+        ability_spawn_id: None,
     }
 }
 
@@ -308,6 +621,18 @@ impl Library {
             }
             if let Some(n) = defs[i].death_name.clone() {
                 defs[i].death_id = index.get(&n).copied();
+            }
+            // [evo] resolve the evolved-variant name to its def id
+            if let Some(n) = defs[i].evolved_name.clone() {
+                defs[i].evolved_id = index.get(&n).copied();
+            }
+            // [rev] link revive target the same way (name -> id)
+            if let Some(n) = defs[i].revive_name.clone() {
+                defs[i].revive_as = index.get(&n).copied();
+            }
+            // [champ] link the champion summon target
+            if let Some(n) = defs[i].ability_spawn_name.clone() {
+                defs[i].ability_spawn_id = index.get(&n).copied();
             }
         }
         Ok(Library { defs, index, deployable, princess_tower, king_tower })

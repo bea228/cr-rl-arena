@@ -83,6 +83,22 @@ impl Battle {
         outcome_code(self.eng.step([a0, a1]))
     }
 
+    /// [champ] Activate `player`'s on-field champion ability. Returns True if it
+    /// fired (champion deployed + active, off cooldown, enough elixir, and — for
+    /// the dash — an enemy in reach); False otherwise, spending nothing.
+    ///
+    /// Equivalent to passing the reserved slot `cr_sim.ABILITY_SLOT` in `step`,
+    /// e.g. `b.step((cr_sim.ABILITY_SLOT, 0.0, 0.0), None)`.
+    fn activate_ability(&mut self, player: usize) -> bool {
+        self.eng.activate_ability(player.min(1))
+    }
+
+    /// [champ] (on_field, cooldown_ticks_remaining, ability_cost) for a player's
+    /// champion; (False, 0, 0) when none is deployed.
+    fn champion_status(&self, player: usize) -> (bool, i32, i32) {
+        self.eng.champion_status(player.min(1))
+    }
+
     // ---- scalar accessors ----
 
     #[getter]
@@ -231,6 +247,13 @@ impl Battle {
                 }
             }
         }
+        // [champ] enforce the one-champion-per-deck rule
+        let champs = out.iter().filter(|&&id| self.eng.lib.defs[id].is_champion).count();
+        if champs > 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a deck may contain at most one champion",
+            ));
+        }
         Ok(out)
     }
 }
@@ -253,6 +276,7 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("TICKS_PER_SECOND", TICKS_PER_SECOND)?;
     m.add("REGULATION_TICKS", REGULATION_TICKS)?;
     m.add("OVERTIME_TICKS", OVERTIME_TICKS)?;
+    m.add("ABILITY_SLOT", crate::engine::ABILITY_SLOT)?; // [champ]
     m.add("RIVER_Y", crate::arena::RIVER_Y.to_f64())?;
     m.add("RIVER_HALF", crate::arena::RIVER_HALF.to_f64())?;
     m.add("BRIDGE_HALF", crate::arena::BRIDGE_HALF.to_f64())?;

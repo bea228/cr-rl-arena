@@ -32,7 +32,51 @@ Severity (RL impact): **H** changes learned strategy · **M** noticeable ·
 - **Per-card deploy time** and a summon-only (`deployable:false`) flag.
 - **Roster expanded** to ~37 cards with level-11 stats exercising all of the above.
 
-Everything below remains outstanding. Verified still-deterministic after the pass.
+## Resolved in the 2026-11-11 multi-agent parity pass (roster now 85 cards)
+
+A second pass closed most of §3–§12 below. Each mechanic class was implemented
+data-driven, then integrated and re-verified (determinism preserved; 10 Rust + 3
+Python tests pass; mechanics spot-checked at runtime).
+
+- **Charge / dash variants** — Prince/Dark-Prince charge, Bandit dash (invuln while
+  dashing, 2× on arrival), Battle Ram (charge → death-spawns Barbarians), Ram Rider
+  (charge + snare), Mega Knight (deploy + jump landing AoE), Royal Hogs, Lumberjack
+  (death Rage zone). Fields: `dash{…}`, `charge{…}`, `snare`, `knockback`, `dies_on_hit`.
+- **Ramp-up / charge-shot / siege** — Inferno Tower & Inferno Dragon (3-stage
+  `ramp_damage[]`, resets on retarget/stun), Sparky (`charge_time` big shot, reset on
+  stun), Mortar (`min_range` dead zone) & X-Bow (`prefers_buildings`, long range).
+- **Reflect & pull** — Electro Giant (reflects damage+stun to attackers in radius),
+  Fisherman (hook pulls the target in, or pulls self to buildings).
+- **Revive & chained multi-stage** — Phoenix (egg → reborn once, at `revive_hp_pct`);
+  chained `death_spawn` (Elixir Golem → golemites → blobs; Goblin Giant).
+- **Invisibility** — Royal Ghost (`invisible`): untargetable except a ~0.75 s window
+  after each attack; area/splash still hits it.
+- **Champions** — one-per-deck (`champion:true`), activatable ability via
+  `Battle.activate_ability(player)` or the reserved `ABILITY_SLOT` in `step`: Archer
+  Queen (cloak), Skeleton King (summon), Golden Knight (line dash). Deck validation
+  rejects >1 champion.
+- **Evolutions** — `evolved`/`evo_cycles` with a per-slot charge counter in reset()
+  state: Evo Knight (shield), Evo Skeletons (×2 count), Evo Royal Giant (knockback).
+- **Enemy-side win conditions** — `deploy_anywhere`: Miner, Goblin Drill (spawner +
+  death burst), Graveyard (timed spawn zone), Goblin Barrel (instant spawn).
+- **Building-aware pathfinding** — reactive local avoidance: ground units steer
+  around a blocking non-target building instead of shoving into it (approximate).
+- **Knockback & pull** — The Log / Bowler (rolling-line pierce + knockback), Tornado
+  (`AeoKind::Pull`), Giant Snowball / Fireball / Rocket knockback; mass-scaled resist.
+- **Projectile behaviors** — commit-to-ground (dodgeable spells via `homing:false`),
+  chain (Electro Wizard/Spirit), pierce/boomerang line (Magic Archer, Executioner),
+  on-hit slow/freeze (Ice Wizard, Ice Spirit), Lightning top-K-by-HP.
+- **Economy & suicide units** — Elixir Collector (`elixir_per_pulse`), Mirror
+  (`mirror:true`, replays last card at +1 elixir), Fire/Ice/Electro Spirit & Wall
+  Breakers (`suicide` on-contact explode).
+
+**Still outstanding after this pass:** exact stat verification against the decoded
+tables (numbers are knowledge-entered level-11 values — hit speeds/ranges likeliest
+to be off); the remaining long tail of the ~120-card roster and their rarer unique
+behaviors; true tile-exact pathfinding and CR's exact aggro/target-priority rules;
+2v2 / draft / event modes. These are refinements, not blockers.
+
+Everything below is the original gap list; items above are now resolved.
 
 ---
 
