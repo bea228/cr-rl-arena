@@ -1354,6 +1354,8 @@ impl Engine {
         let mut dmg = vec![0i32; n];
         let mut stun_add = vec![0i32; n];
         let mut slow_add = vec![0i32; n]; // [proj] on-hit slow accrued this tick
+        let mut curse_add = vec![0i32; n]; // [curse] Mother Witch on-hit curse ticks accrued this tick
+        let mut curse_src = vec![-1i32; n]; // [curse] def id the victim becomes on its later death (-1 = none)
         let mut knock: Vec<V2> = vec![V2::default(); n]; // [kb] per-entity knockback displacement
         let mut set_pos: Vec<Option<V2>> = vec![None; n];
         let mut set_cd: Vec<Option<i32>> = vec![None; n];
@@ -1618,6 +1620,9 @@ impl Engine {
                                 knockback: d.knockback,                                     // [kb]
                                 roll_dir,                                                   // [kb]
                                 roll_remaining: if is_roll { d.roll_range } else { Fx(0) }, // [kb]
+                                // [curse] Mother Witch VoodooCurse rides the shot
+                                curse_ticks: d.curse_ticks,
+                                curse_spawn: d.curse_spawn_id.map(|x| x as i32).unwrap_or(-1),
                                 ..Default::default()
                             });
                         }
@@ -1761,7 +1766,9 @@ impl Engine {
 
         // projectiles (use post-move positions)
         let snap2 = Snap::build(&self.entities, &self.lib);
-        self.step_projectiles(&snap2, &mut dmg, &mut stun_add, &mut slow_add, &mut knock);
+        self.step_projectiles(
+            &snap2, &mut dmg, &mut stun_add, &mut slow_add, &mut knock, &mut curse_add, &mut curse_src,
+        );
         self.projectiles.extend(new_proj);
 
         // [kb] apply accumulated knockback (push targets back; bounds + river respected)
@@ -1769,7 +1776,7 @@ impl Engine {
 
 
         // resolve damage, deaths, crowns, king activation
-        self.apply_damage(&dmg, &stun_add, &slow_add);
+        self.apply_damage(&dmg, &stun_add, &slow_add, &curse_add, &curse_src);
 
         // [path] return the flow-field memo to self for reuse next tick
         self.path_cache = path_cache;
@@ -2109,6 +2116,8 @@ impl Engine {
         stun_add: &mut [i32],
         slow_add: &mut [i32],
         knock: &mut [V2], // [kb] accumulated per-entity push
+        curse_add: &mut [i32], // [curse] Mother Witch on-hit curse ticks
+        curse_src: &mut [i32], // [curse] the def id the cursed victim becomes on death
     ) {
         let id2idx = &snap.id2idx;
         for p in self.projectiles.iter_mut() {
@@ -2176,7 +2185,7 @@ impl Engine {
             let delta = tpos.sub(p.pos);
             let dist = delta.len();
             if p.speed.0 == 0 || dist <= p.speed {
-                proj_impact(p, tpos, snap, dmg, stun_add, slow_add, knock);
+                proj_impact(p, tpos, snap, dmg, stun_add, slow_add, knock, curse_add, curse_src);
                 p.dead = true;
             } else {
                 let mv = delta.step_toward(p.speed);
@@ -2204,7 +2213,14 @@ impl Engine {
         }
     }
 
-    fn apply_damage(&mut self, dmg: &[i32], stun_add: &[i32], slow_add: &[i32]) {
+    fn apply_damage(
+        &mut self,
+        dmg: &[i32],
+        stun_add: &[i32],
+        slow_add: &[i32],
+        curse_add: &[i32], // [curse] Mother Witch on-hit curse ticks (0 = none)
+        curse_src: &[i32], // [curse] def id the cursed victim becomes on death
+    ) {
         let mut activate = [false; 2];
         for i in 0..self.entities.len() {
             if stun_add[i] > 0 {
@@ -2214,6 +2230,14 @@ impl Engine {
             if slow_add[i] > 0 {
                 // [proj] on-hit slow (Ice Wizard etc.); refreshes to the longer duration
                 self.entities[i].slow = self.entities[i].slow.max(slow_add[i]);
+            }
+            // [curse] Mother Witch VoodooCurse applied on a projectile hit: tag the
+            // victim (keeping the longer curse) so its later death spawns the pig for
+            // the attacker. Reuses the same curse/curse_spawn state as Goblin Curse,
+            // so the shared death-transform + tick-down logic handles the rest.
+            if curse_add[i] > self.entities[i].curse {
+                self.entities[i].curse = curse_add[i];
+                self.entities[i].curse_spawn = curse_src[i];
             }
             if dmg[i] > 0 && !self.entities[i].dead {
                 let mut rem = dmg[i];
@@ -2591,6 +2615,8 @@ fn proj_impact(
     stun_add: &mut [i32],
     slow_add: &mut [i32],
     knock: &mut [V2], // [kb] accumulate knockback on hit (Fireball/Rocket/Snowball)
+    curse_add: &mut [i32], // [curse] Mother Witch on-hit curse ticks
+    curse_src: &mut [i32], // [curse] def id the cursed victim becomes on its later death
 ) {
     let n = snap.x.len();
     // [kb] owner-facing fallback direction when a knockback has no natural vector
@@ -2682,6 +2708,18 @@ fn proj_impact(
             }
             if p.slow_ticks > 0 {
                 slow_add[idx] = slow_add[idx].max(p.slow_ticks);
+            }
+            // [curse] Mother Witch VoodooCurse: tag a hit troop (IgnoreBuildings=true,
+            // so never a tower/building). Its later death spawns the pig for the
+            // Mother Witch's owner (DeathSpawnIsEnemy). Keep the longer-lived curse.
+            if p.curse_ticks > 0
+                && p.curse_spawn >= 0
+                && !snap.is_tower[idx]
+                && !snap.is_building[idx]
+                && p.curse_ticks > curse_add[idx]
+            {
+                curse_add[idx] = p.curse_ticks;
+                curse_src[idx] = p.curse_spawn;
             }
             // [kb] single-target knockback along the projectile's travel line
             if p.knockback.0 > 0 && !snap.is_tower[idx] && !snap.is_building[idx] {
@@ -3770,7 +3808,8 @@ mod champ_ability_tests {
         let mut dmg = vec![0i32; n];
         dmg[mi] = 1000;
         let zero = vec![0i32; n];
-        eng.apply_damage(&dmg, &zero, &zero);
+        let none = vec![-1i32; n];
+        eng.apply_damage(&dmg, &zero, &zero, &zero, &none);
         // 65% reduction -> 1000 * 35% = 350 taken
         assert_eq!(hp0 - eng.entities[mi].hp, 350, "Deflect cuts 65% of the hit");
     }
@@ -4338,5 +4377,257 @@ mod a7_tests {
             v
         };
         assert_eq!(run(), run());
+    }
+}
+
+// [curse] R1: Mother Witch (WitchMother) -- a ranged attacker whose VoodooProjectile
+// curses the enemy it hits; a cursed enemy that later dies spawns one VoodooHog pig
+// for the Mother Witch's owner (the cursed unit's opponent -> DeathSpawnIsEnemy).
+#[cfg(test)]
+mod r1_mother_witch_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    /// Drive a Mother Witch (owner 0) until her shot curses a pinned enemy knight
+    /// (owner 1), 3 tiles away and inside her 5.5 range. Both bodies are pinned by id
+    /// each tick so the shot reliably fires and lands and the knight can't close in and
+    /// kill her. Returns (engine, enemy_id, voodoo_hog_def).
+    fn curse_enemy() -> (Engine, u32, usize) {
+        let mut eng = Engine::new(Library::default_lib());
+        let mw = eng.lib.id_of("mother_witch").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, mw, at(9.0, 8.0));
+        let mw_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 11.0));
+        let eid = eng.entities.last().unwrap().id;
+        let voodoo = eng.lib.id_of("voodoo_hog").unwrap();
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        for _ in 0..120 {
+            for e in eng.entities.iter_mut() {
+                if e.id == mw_id {
+                    e.pos = at(9.0, 8.0);
+                } else if e.id == eid {
+                    e.pos = at(9.0, 11.0);
+                }
+            }
+            eng.step(noop());
+            if eng.entities.iter().find(|e| e.id == eid).map_or(false, |e| e.curse > 0) {
+                return (eng, eid, voodoo);
+            }
+        }
+        panic!("Mother Witch never cursed the enemy within 120 ticks");
+    }
+
+    // A unit hit by the Mother Witch and then killed spawns the pig ON HER SIDE.
+    #[test]
+    fn cursed_death_spawns_pig_for_mother_witch() {
+        let (mut eng, eid, voodoo) = curse_enemy();
+        // the curse carries the VoodooHog transform and no pig exists yet
+        let cursed = eng.entities.iter().find(|e| e.id == eid).unwrap();
+        assert!(cursed.curse > 0, "enemy is cursed by the hit");
+        assert_eq!(cursed.curse_spawn, voodoo as i32, "curse carries the VoodooHog transform");
+        assert_eq!(
+            eng.entities.iter().filter(|e| e.def == voodoo && !e.dead).count(),
+            0,
+            "no pig before the cursed unit dies"
+        );
+        // kill the cursed enemy
+        for e in eng.entities.iter_mut() {
+            if e.id == eid {
+                e.hp = 0;
+            }
+        }
+        eng.step(noop());
+        let for_mw = eng.entities.iter().filter(|e| e.def == voodoo && e.owner == 0 && !e.dead).count();
+        let for_enemy = eng.entities.iter().filter(|e| e.def == voodoo && e.owner == 1 && !e.dead).count();
+        assert_eq!(for_mw, 1, "one VoodooHog pig spawns on the Mother Witch's side");
+        assert_eq!(for_enemy, 0, "the pig side-flips to the Mother Witch's owner (DeathSpawnIsEnemy)");
+    }
+
+    // An enemy that was never hit by the Mother Witch spawns no pig when it dies.
+    #[test]
+    fn uncursed_death_spawns_no_pig() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(1, knight, at(9.0, 10.0));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+            e.hp = 0;
+        }
+        eng.step(noop());
+        let voodoo = eng.lib.id_of("voodoo_hog").unwrap();
+        assert_eq!(
+            eng.entities.iter().filter(|e| e.def == voodoo && !e.dead).count(),
+            0,
+            "no curse => no pig"
+        );
+    }
+
+    // VoodooHog is summon-only (deployable:false) and a building-targeting hog that
+    // jumps the river -- the real pig's stats were resolved from the tables.
+    #[test]
+    fn voodoo_hog_is_summon_only_building_targeter() {
+        let lib = Library::default_lib();
+        let d = &lib.defs[lib.id_of("voodoo_hog").unwrap()];
+        assert!(!d.deployable, "pig is summon-only, never deck-legal");
+        assert!(d.buildings_only, "pig targets only buildings");
+        assert!(d.jumps_river, "pig jumps the river");
+        assert!(!lib.deployable.contains(&lib.id_of("voodoo_hog").unwrap()));
+        // the Mother Witch herself carries the on-hit curse + transform link
+        let mw = &lib.defs[lib.id_of("mother_witch").unwrap()];
+        assert!(mw.curse_ticks > 0, "Mother Witch attacks apply a curse");
+        assert_eq!(mw.curse_spawn_id, Some(lib.id_of("voodoo_hog").unwrap()));
+    }
+
+    // Determinism guard: the whole curse-on-hit + spawn sequence replays bit-identically.
+    #[test]
+    fn mother_witch_curse_is_deterministic() {
+        let run = || {
+            let (mut eng, eid, _voodoo) = curse_enemy();
+            for e in eng.entities.iter_mut() {
+                if e.id == eid {
+                    e.hp = 0;
+                }
+            }
+            eng.step(noop());
+            let mut v: Vec<(usize, u8, i64, i64, i32, i32, i32)> = eng
+                .entities
+                .iter()
+                .map(|e| (e.def, e.owner, e.pos.x.0, e.pos.y.0, e.hp, e.curse, e.curse_spawn))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run());
+    }
+}
+
+// [champ] R2: Goblinstein (Champion) deploys as two linked parts -- the big melee
+// Monster (the deck-legal champion body, buildings-only) + the summon-only Doctor
+// (a ranged zap/freeze support). The pairing reuses the deploy-spawn path; the
+// Doctor's tether/revive ABILITY is deferred (documented in GAPS_ROUND2.md R2).
+#[cfg(test)]
+mod r2_goblinstein_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+
+    // Deploying Goblinstein yields BOTH parts on the owner's side.
+    #[test]
+    fn goblinstein_deploys_monster_plus_doctor() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monster = eng.lib.id_of("goblinstein").unwrap();
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        eng.place_card(0, monster, at(9.0, 6.0));
+        let monsters = eng.entities.iter().filter(|e| e.def == monster).count();
+        let doctors = eng.entities.iter().filter(|e| e.def == doctor).count();
+        assert_eq!(monsters, 1, "one Goblinstein Monster (the champion body)");
+        assert_eq!(doctors, 1, "one Goblinstein Doctor (the paired pet)");
+        assert_eq!(eng.entities.len(), 2, "exactly the two linked parts, nothing else");
+        assert!(eng.entities.iter().all(|e| e.owner == 0), "both parts on the deployer's side");
+    }
+
+    // The champion card is deck-legal and marked `is_champion` (so the existing
+    // one-champion-per-deck rule, which counts is_champion cards, covers it); the
+    // Doctor is summon-only. The two parts carry their real, distinct combat roles.
+    #[test]
+    fn goblinstein_is_champion_doctor_is_summon_only() {
+        let lib = Library::default_lib();
+        let legal = |n: &str| lib.deployable.contains(&lib.id_of(n).unwrap());
+        assert!(legal("goblinstein"), "Goblinstein is deck-legal");
+        assert!(!legal("goblinstein_doctor"), "the Doctor is summon-only (deployable:false)");
+        let monster = &lib.defs[lib.id_of("goblinstein").unwrap()];
+        assert!(monster.is_champion, "Goblinstein is a Champion -> one-per-deck rule applies");
+        assert_eq!(monster.elixir, 5, "Champion costs 5 elixir");
+        assert!(monster.buildings_only, "the Monster is a buildings-only melee tank");
+        assert_eq!(monster.proj_speed.0, 0, "the Monster is melee");
+        assert_eq!(monster.deploy_spawn_id, Some(lib.id_of("goblinstein_doctor").unwrap()));
+        let doctor = &lib.defs[lib.id_of("goblinstein_doctor").unwrap()];
+        assert_eq!(doctor.targets, Targets::Both, "the Doctor hits air + ground");
+        assert!(doctor.proj_speed.0 > 0, "the Doctor is ranged");
+        assert!(doctor.on_hit_freeze_ticks > 0, "the Doctor's zap freezes its target");
+    }
+
+    // The one-champion-per-deck rule still rejects a second champion alongside it
+    // (the rule counts is_champion defs; this guards it for the new card too).
+    #[test]
+    fn two_champions_including_goblinstein_is_illegal() {
+        let lib = Library::default_lib();
+        let deck = [
+            lib.id_of("goblinstein").unwrap(),
+            lib.id_of("monk").unwrap(), // a second champion
+            lib.id_of("knight").unwrap(),
+            lib.id_of("archers").unwrap(),
+            lib.id_of("goblins").unwrap(),
+            lib.id_of("musketeer").unwrap(),
+            lib.id_of("fireball").unwrap(),
+            lib.id_of("arrows").unwrap(),
+        ];
+        let champs = deck.iter().filter(|&&id| lib.defs[id].is_champion).count();
+        assert_eq!(champs, 2, "two champions present -> env deck-legality must reject (>1)");
+    }
+
+    // The Doctor's zap-freeze is applied by its own ranged attack: drive the Doctor
+    // (owner 0) against a pinned enemy and confirm the hit freezes (stuns) it.
+    #[test]
+    fn doctor_zap_freezes_the_enemy_it_hits() {
+        let mut eng = Engine::new(Library::default_lib());
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, doctor, at(9.0, 8.0));
+        let doc_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 11.0)); // inside the Doctor's 5.5 range
+        let eid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let mut froze = false;
+        for _ in 0..160 {
+            for e in eng.entities.iter_mut() {
+                if e.id == doc_id {
+                    e.pos = at(9.0, 8.0);
+                } else if e.id == eid {
+                    e.pos = at(9.0, 11.0);
+                }
+            }
+            eng.step([Action::noop(), Action::noop()]);
+            if eng.entities.iter().find(|e| e.id == eid).map_or(false, |e| e.stun > 0) {
+                froze = true;
+                break;
+            }
+        }
+        assert!(froze, "the Goblinstein Doctor's zap freezes the enemy it hits");
+    }
+
+    // Determinism guard: the pairing deploy replays bit-identically.
+    #[test]
+    fn goblinstein_pairing_is_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let monster = eng.lib.id_of("goblinstein").unwrap();
+            eng.place_card(0, monster, at(9.0, 6.0));
+            let mut v: Vec<(usize, u8, i64, i64, i32)> = eng
+                .entities
+                .iter()
+                .map(|e| (e.def, e.owner, e.pos.x.0, e.pos.y.0, e.hp))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(run(), run(), "Goblinstein pairing must replay identically");
     }
 }

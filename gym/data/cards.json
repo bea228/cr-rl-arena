@@ -1637,6 +1637,43 @@
     "count": 2
    }
   },
+  "mother_witch": {
+   "elixir": 4,
+   "type": "troop",
+   "hp": 530,
+   "damage": 133,
+   "hit_speed": 1.0,
+   "load_time": 0.7,
+   "range": 5.5,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.6,
+   "sight": 5.5,
+   "deploy_time": 1.0,
+   "targets": "both",
+   "projectile_speed": 6.0,
+   "homing": true,
+   "curse_on_hit": 5.0,
+   "curse_spawn": "voodoo_hog"
+  },
+  "voodoo_hog": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 630,
+   "damage": 54,
+   "hit_speed": 1.2,
+   "load_time": 0.95,
+   "range": 0.75,
+   "speed": 2.0,
+   "collision_radius": 0.6,
+   "mass": 0.2,
+   "sight": 9.5,
+   "deploy_time": 0.2,
+   "targets": "ground",
+   "target_buildings_only": true,
+   "jumps_river": true
+  },
   "bat": {
    "elixir": 0,
    "type": "troop",
@@ -1965,6 +2002,46 @@
     "duration": 1.0,
     "range": 6.0
    }
+  },
+  "goblinstein": {
+   "elixir": 5,
+   "type": "troop",
+   "hp": 2240,
+   "damage": 128,
+   "hit_speed": 1.5,
+   "load_time": 0.7,
+   "range": 1.2,
+   "speed": 1.0,
+   "collision_radius": 0.75,
+   "mass": 1.8,
+   "sight": 7.5,
+   "deploy_time": 1.0,
+   "targets": "ground",
+   "target_buildings_only": true,
+   "champion": true,
+   "deploy_spawn": {
+    "card": "goblinstein_doctor",
+    "count": 1
+   }
+  },
+  "goblinstein_doctor": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 722,
+   "damage": 136,
+   "hit_speed": 1.8,
+   "load_time": 1.3,
+   "range": 5.5,
+   "speed": 1.0,
+   "collision_radius": 0.5,
+   "mass": 0.4,
+   "sight": 5.5,
+   "deploy_time": 1.0,
+   "targets": "both",
+   "projectile_speed": 5.0,
+   "homing": true,
+   "on_hit_freeze": 0.5
   },
   "guardian": {
    "elixir": 0,
