@@ -188,7 +188,7 @@ not implemented.
   Scan confirmed zmij/syn3 are the ONLY poisoned edges in the tree. Test:
   `serde_json_toolchain_is_intact` (ryu float formatting exact; card lib loads). Pre-fix lock
   backed up at the session scratchpad `Cargo.lock.tampered.bak`. `cargo test --release`:
-  47/47 pass. Commit: __PENDING__
+  47/47 pass. Commit: f8709bd
 
 ## B. Scope decisions (confirm & document — do NOT implement)
 
