@@ -267,11 +267,25 @@ The spell system is **instant area damage + optional stun only**
 
 ## 13. Interface / observability caveats (sim design, not CR mechanics)
 
-- The competition `obs` correctly **hides** opponent hand, next card, and elixir
-  (only the full board + your own hand/elixir/crowns are exposed) — this matches
-  CR's hidden information. **But** the raw `Battle` API exposes `elixir(opponent)`,
-  `hand(opponent)`, etc.; local self-play can "cheat" unless restricted to
-  `observe(player)`.
+- `[RESOLVED 2026-11-12]` **Observability guard added — opponent hidden info is
+  no longer reachable through the raw API.** The competition `obs` already
+  **hid** opponent hand, next card, and elixir (only the full board + your own
+  hand/elixir/crowns are exposed) — matching CR's hidden information — but the
+  raw `Battle` still exposed `elixir(opponent)`, `hand(opponent)`, etc., so local
+  self-play could "cheat". Now `Battle.view(player)` returns a read-only
+  `PlayerView` (new pyclass in `src/env.rs`, registered in `src/lib.rs`,
+  re-exported from `python/cr_sim/__init__.py`) that a competition harness hands
+  to each agent instead of the raw `Battle`. The view exposes the full board
+  (`entities`/`towers`/`projectiles`), its **own** hand/next-card/elixir/crowns/
+  champion-status, the opponent's crown count + tower state (public), and the
+  fog-of-war `observe()`/`legal()` for its seat — its private getters take **no
+  player argument** and there is no accessor for the opponent's hand, next card,
+  or elixir, so an agent *structurally* cannot peek. The view is read-only (no
+  `step`/`reset`/`activate_ability`) and does not touch simulation state, so
+  determinism is unaffected. The raw `Battle` getters remain for the trusted
+  harness, debugging, and replay. Proven by Rust `env::view_tests` (seat/clamp
+  logic) and Python `tests/test_fog.py` (own state readable; `view(0).hand(1)` /
+  `.elixir(1)` raise `TypeError`; no opponent private key in `observe()`).
 - `[SIMPLIFIED]` **M — Decision cadence.** The server requests actions at 5 Hz
   (every 4 ticks); CR lets you act on any frame. Fine for deploys (instantaneous)
   but caps action granularity.

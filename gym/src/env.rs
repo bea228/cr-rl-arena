@@ -99,6 +99,24 @@ impl Battle {
         self.eng.champion_status(player.min(1))
     }
 
+    /// Return a read-only [`PlayerView`] exposing **only** what `player` may
+    /// legally see under Clash Royale's hidden-information model.
+    ///
+    /// A competition harness should hand each agent `battle.view(me)` — never the
+    /// raw `Battle`. The view lets the agent read the full board, its own
+    /// hand/next-card/elixir/crowns, and the opponent's crowns + tower state, but
+    /// has no accessor at all for the opponent's hand, next card, or elixir, so an
+    /// agent structurally cannot peek at the opponent's hidden information. The
+    /// raw `Battle` getters stay available for the trusted harness, debugging, and
+    /// replay. The view is a live window: re-reading it after `step(...)` reflects
+    /// the new state, and it never mutates the simulation.
+    fn view(slf: &Bound<'_, Self>, player: usize) -> PlayerView {
+        PlayerView {
+            battle: slf.clone().unbind(),
+            player: player.min(1),
+        }
+    }
+
     // ---- scalar accessors ----
 
     #[getter]
@@ -255,6 +273,186 @@ impl Battle {
             ));
         }
         Ok(out)
+    }
+}
+
+/// Clamp a player index to a valid seat (0 or 1).
+#[inline]
+fn view_player(player: usize) -> usize {
+    player.min(1)
+}
+
+/// The opposing seat for a (clamped) player index.
+#[inline]
+fn view_opponent(player: usize) -> usize {
+    1 - player.min(1)
+}
+
+/// A read-only, per-player window onto a [`Battle`] that enforces Clash Royale's
+/// hidden-information model at the API boundary.
+///
+/// What this player **may** see (and this view exposes):
+///   * the full board — every deployed unit, tower, and projectile of *both*
+///     sides is public (`entities`, `towers`, `projectiles`),
+///   * its own hand, next card, elixir, crown count, and champion status,
+///   * the opponent's crown count and tower HP/state (via the public board),
+///   * the fog-of-war `observe()` observation and the `legal()` action mask.
+///
+/// What it **cannot** see: there is deliberately no accessor for the opponent's
+/// hand, next card, or elixir. The per-player getters (`elixir`, `hand`,
+/// `hand_cost`, `next_card`, `legal`, `champion_status`) take **no player
+/// argument** — they always report this view's own seat — so an agent handed
+/// `battle.view(me)` structurally cannot read the opponent's private state, and
+/// the view exposes no mutators (`step`/`reset`/`activate_ability`) either.
+///
+/// The raw `Battle` getters remain for the trusted harness, debugging, and
+/// replay. The view is a live window onto the same `Battle`, so re-reading it
+/// after `Battle.step(...)` reflects the new tick; it never mutates the sim.
+#[pyclass]
+pub struct PlayerView {
+    battle: Py<Battle>,
+    player: usize,
+}
+
+#[pymethods]
+impl PlayerView {
+    /// This view's own seat (0 or 1).
+    #[getter]
+    fn player(&self) -> usize {
+        self.player
+    }
+
+    /// The opponent's seat (0 or 1).
+    #[getter]
+    fn opponent(&self) -> usize {
+        view_opponent(self.player)
+    }
+
+    // ---- public match state (both players see these) ----
+
+    #[getter]
+    fn tick(&self, py: Python<'_>) -> i64 {
+        self.battle.borrow(py).tick()
+    }
+    fn elapsed_seconds(&self, py: Python<'_>) -> f64 {
+        self.battle.borrow(py).elapsed_seconds()
+    }
+    fn phase(&self, py: Python<'_>) -> &'static str {
+        self.battle.borrow(py).phase()
+    }
+    fn outcome(&self, py: Python<'_>) -> i32 {
+        self.battle.borrow(py).outcome()
+    }
+    fn done(&self, py: Python<'_>) -> bool {
+        self.battle.borrow(py).done()
+    }
+
+    /// (player0_crowns, player1_crowns). The crown score is public to both sides.
+    fn crowns(&self, py: Python<'_>) -> (i32, i32) {
+        self.battle.borrow(py).crowns()
+    }
+    /// This player's own crown count.
+    fn my_crowns(&self, py: Python<'_>) -> i32 {
+        let c = self.battle.borrow(py).crowns();
+        if self.player == 0 { c.0 } else { c.1 }
+    }
+    /// The opponent's crown count (public).
+    fn opponent_crowns(&self, py: Python<'_>) -> i32 {
+        let c = self.battle.borrow(py).crowns();
+        if self.player == 0 { c.1 } else { c.0 }
+    }
+
+    /// Full board — every deployed unit and tower of *both* sides (public).
+    /// Same tuple shape as `Battle.entities()`.
+    fn entities(
+        &self,
+        py: Python<'_>,
+    ) -> Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)> {
+        self.battle.borrow(py).entities()
+    }
+
+    /// The tower subset of `entities()` (both sides' crown/king towers are
+    /// public, including their HP) — convenience for reading tower state.
+    fn towers(
+        &self,
+        py: Python<'_>,
+    ) -> Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)> {
+        self.battle
+            .borrow(py)
+            .entities()
+            .into_iter()
+            .filter(|e| e.7) // e.7 == is_tower
+            .collect()
+    }
+
+    /// Projectiles in flight for both sides (public).
+    fn projectiles(&self, py: Python<'_>) -> Vec<(u8, f64, f64)> {
+        self.battle.borrow(py).projectiles()
+    }
+
+    // ---- private: this player's OWN state only (never the opponent's) ----
+
+    /// This player's own elixir. The opponent's elixir is hidden — there is no
+    /// accessor for it, and this getter takes no player argument.
+    fn elixir(&self, py: Python<'_>) -> f64 {
+        self.battle.borrow(py).elixir(self.player)
+    }
+    /// This player's own hand (4 card names).
+    fn hand(&self, py: Python<'_>) -> Vec<String> {
+        self.battle.borrow(py).hand(self.player)
+    }
+    /// Elixir cost of each card in this player's own hand.
+    fn hand_cost(&self, py: Python<'_>) -> Vec<i32> {
+        self.battle.borrow(py).hand_cost(self.player)
+    }
+    /// This player's own next card.
+    fn next_card(&self, py: Python<'_>) -> String {
+        self.battle.borrow(py).next_card(self.player)
+    }
+    /// This player's own champion status: (on_field, cooldown_ticks, cost). The
+    /// opponent's ability cooldown is hidden.
+    fn champion_status(&self, py: Python<'_>) -> (bool, i32, i32) {
+        self.battle.borrow(py).champion_status(self.player)
+    }
+    /// Per-hand-slot affordability mask for this player.
+    fn legal(&self, py: Python<'_>) -> Vec<bool> {
+        self.battle.borrow(py).legal(self.player)
+    }
+
+    /// The fog-of-war observation dict for this player (identical to
+    /// `Battle.observe(player)`): own hand/next/elixir/crowns + the full board,
+    /// with the opponent's private state omitted.
+    fn observe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.battle.borrow(py).observe(py, self.player)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PlayerView(player={})", self.player)
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::{view_opponent, view_player};
+
+    #[test]
+    fn seat_clamps_to_valid_range() {
+        assert_eq!(view_player(0), 0);
+        assert_eq!(view_player(1), 1);
+        // out-of-range seats clamp to seat 1, matching the Battle getters.
+        assert_eq!(view_player(2), 1);
+        assert_eq!(view_player(usize::MAX), 1);
+    }
+
+    #[test]
+    fn opponent_is_the_other_seat() {
+        assert_eq!(view_opponent(0), 1);
+        assert_eq!(view_opponent(1), 0);
+        assert_eq!(view_opponent(2), 0); // clamped first
+        // a view's own seat and its opponent are always distinct
+        for p in 0..2usize {
+            assert_ne!(view_player(p), view_opponent(p));
+        }
     }
 }
 
