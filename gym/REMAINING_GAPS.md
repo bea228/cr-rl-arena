@@ -158,7 +158,7 @@ not implemented.
   - **Goblinstein — [~] DEFERRED.** A Champion that deploys a linked monster + Doctor pet
     (`SummonCharacter goblinstein + goblinstein_doctor`) with the Doctor's own revive/zap
     ability — a new champion-pet-link + ability subsystem beyond clean reuse.
-  `cargo test --release`: 46/46 pass. Commit: __PENDING__
+  `cargo test --release`: 46/46 pass. Commit: 33741ac
 - [ ] **A8 — Dependabot vulnerabilities (3: 1 high / 1 moderate / 1 low).** Identify the
   flagged advisories (`gym` + `server` dependency manifests) and bump conservatively to
   patched versions; `cargo test` must stay green. If a bump can't be done safely, record the
