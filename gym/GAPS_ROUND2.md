@@ -122,13 +122,34 @@ items open. This round closes them. Same discipline as before.
   system and are not present in the decoded logic tables, so no corrected value can be sourced.
   Boss Bandit's 3.0s and Goblinstein's deferred tether (R2) are the only data-grounded cases.
   No code change; approximations left intact. Commit: (checklist-only)
-- [ ] **R4 — pyo3 advisory RUSTSEC-2025-0020 (low).** Currently recorded-not-fixed because the
-  patched line is a breaking 0.22→0.24 major bump. Attempt the upgrade conservatively: bump
-  pyo3 to the patched release, fix the API breakage across `src/env.rs`/`src/lib.rs`/the
-  `PlayerView` code, keep determinism and all tests green. If the migration proves invasive or
-  risks the PyO3 surface, STOP, revert cleanly, and mark `[~]` DEFERRED documenting the exact
-  breaking changes encountered and that the vulnerable API is unused (current mitigation). Do
-  not leave a half-migrated build. This item is LAST.
+- [~] **R4 — pyo3 advisory RUSTSEC-2025-0020 (low).** DEFERRED after a conservative attempt;
+  reverted cleanly to `pyo3 0.22.6` (no half-migrated build — `cargo test --release` 56/56 green
+  on the restored pin). What I did and found:
+  - **Attempted the bump.** Changed `gym/Cargo.toml` to `pyo3 = "0.24"` → resolved `pyo3 0.24.2`
+    and `cargo build --release` + `cargo test --release` BOTH succeeded (56/56). The ENTIRE API
+    breakage was a single deprecation: `PyDict::new_bound(py)` → `PyDict::new(py)` at
+    `src/env.rs:222` (a pure rename; `new_bound` is a deprecated alias). Nothing else changed —
+    the crate already uses the modern `Bound<'_, _>` API (`#[pyclass]`/`#[pymethods]`/
+    `#[pymodule]`/`#[pyo3(signature=…)]`/`PyResult`/`Bound<'py, PyDict>`), which is stable across
+    0.22→0.24. So the migration is trivial, NOT invasive.
+  - **Why deferred anyway** (per the supervisor's R4 caution — don't act on an unverified
+    advisory, and the earlier A8 "zmij typosquat" security alarm this session turned out to be a
+    FALSE POSITIVE):
+    1. **Advisory unconfirmable locally.** No `cargo-audit`/`cargo-deny` installed and no
+       `~/.cargo/advisory-db`; I will not over-trust memory about RUSTSEC-2025-0020. I cannot
+       positively confirm the advisory exists/applies from the tools available.
+    2. **Zero exposure regardless.** The vulnerable API `PyString::from_object` is definitively
+       UNUSED — `grep -rn "PyString\|from_object" src/` = 0 hits. So even if the advisory is real,
+       this crate is not affected (the standing mitigation).
+    3. **Cannot runtime-validate the binding.** maturin/pytest are off-limits (shared venv), and
+       `cargo test --release` (the stated gate) only exercises the pure-Rust `rlib` — it never
+       calls the `#[pyclass]`/`#[pymethods]` runtime path. Merging a 2-major-version bump of a
+       crate whose sole purpose IS the Python boundary, validated only at compile time, is the
+       kind of unjustified risk the caution warns against.
+  - **Determinism:** unaffected either way (pyo3 is the binding layer; the fixed-point engine is
+    pure Rust and untouched).
+  - **To apply later** (with pytest access): bump `Cargo.toml` pyo3 to `0.24`, change the one
+    `PyDict::new_bound` → `PyDict::new`, done. Commit: (checklist-only; no code change)
 
 ---
 
