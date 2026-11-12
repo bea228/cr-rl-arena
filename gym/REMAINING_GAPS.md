@@ -80,7 +80,7 @@ not implemented.
   healer dying this tick can't self-resurrect via its own aura (caught + fixed by the
   second test). Tests: `battle_healer_heals_nearby_ally_and_self` (incl. a far ally that is
   NOT healed), `heal_aura_stops_when_healer_dies`. `cargo test --release`: 34/34 pass.
-  Commit: __PENDING__
+  Commit: 5372752
 - [ ] **A4 — Mixed-composition cards (Goblin Gang, Rascals).** These deploy a MIX of unit
   types in one card (Goblin Gang = 3 stab goblins + 3 spear goblins; Rascals = 1 Rascal Boy
   tank + 2 Rascal Girls ranged). The engine spawns `count` of ONE def. Add a
