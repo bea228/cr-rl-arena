@@ -15,11 +15,16 @@ reply is treated as a no-op, so one misbehaving agent cannot stall or crash a ma
 from __future__ import annotations
 
 import asyncio
+import os
 from numbers import Real
 
-# Decide at 5 Hz (every 4 ticks at 20 tps). Deploys are instantaneous, so acting
-# between decision points is unnecessary and keeps round-trips bounded (~900/match).
-DECISION_EVERY = 4
+# [M7] Decision cadence (ticks between action requests). Default 4 => 5 Hz at the
+# sim's 20 Hz tick. Deploys are instantaneous, so acting between decision points is
+# unnecessary and keeps round-trips bounded (~900/match). Configurable so operators
+# can trade granularity for round-trips WITHOUT touching the core tick rate (which is
+# fixed at 20 Hz: every tuned stat, the determinism baseline, and the stat-reconciled
+# level-11 numbers are calibrated to it). Set CR_DECISION_EVERY=1 to act every tick.
+DECISION_EVERY = max(1, int(os.environ.get("CR_DECISION_EVERY", "4")))
 
 
 def _validate(action):

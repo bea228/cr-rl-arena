@@ -230,6 +230,8 @@ pub struct CardDef {
     pub ability_range: Fx,           // Dash: max dash reach (tiles)
     pub ability_spawn_name: Option<String>, // Summon: unit to spawn
     pub ability_spawn_id: Option<usize>,
+    // [M2] explicit homing override; None = engine default (splash => commit-to-ground).
+    pub homing: Option<bool>,
 }
 
 // ---- raw JSON shapes ----
@@ -348,6 +350,10 @@ struct RawCard {
     deployable: Option<bool>,
     // [proj] projectile-behavior extensions (all optional; defaults keep old cards intact)
     commit_ground: Option<bool>,
+    // [M2] explicit per-card homing override (real CR `Homing` flag). When present
+    // it wins; when absent the engine's splash-based default applies (single-target
+    // "tracking" shots home; splash/area shots commit to a ground point = dodgeable).
+    homing: Option<bool>,
     chain_count: Option<i64>,
     chain_radius: Option<f64>,
     line_range: Option<f64>,
@@ -494,7 +500,9 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         starts_dormant: r.starts_dormant.unwrap_or(false),
         deployable: r.deployable.unwrap_or(true),
         deploy_anywhere: r.deploy_anywhere.unwrap_or(false), // [edep]
-        deploy_ticks: r.deploy_time.map(secs_to_ticks).unwrap_or(TICKS_PER_SECOND as i32),
+        // [M4] per-card deploy time; cards with no `deploy_time` fall back to the
+        // engine's named flat constant (1.0s) rather than a bare magic number.
+        deploy_ticks: r.deploy_time.map(secs_to_ticks).unwrap_or(crate::arena::DEPLOY_TICKS),
         shield: r.shield.unwrap_or(0) as i32,
         spawn_count: r.spawn.as_ref().and_then(|s| s.count).unwrap_or(1) as i32,
         spawn_interval_ticks: r
@@ -568,6 +576,7 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         ability_range: ab_range,
         ability_spawn_name: ab_spawn,
         ability_spawn_id: None,
+        homing: r.homing, // [M2]
     }
 }
 

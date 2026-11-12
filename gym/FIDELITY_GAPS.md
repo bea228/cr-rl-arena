@@ -102,6 +102,11 @@ Everything below is the original gap list; items above are now resolved.
 - `[SIMPLIFIED]` **M — 20 Hz tick rate.** The real engine advances on a finer
   internal timestep, so hit speeds, deploy times, and elixir quantize to 50 ms
   here and are not all frame-exact.
+  - `[DEFERRED 2026-11-12]` (M7) Deliberately NOT changed: the core 20 Hz tick is the
+    calibration base for every tuned stat, the stat-reconciled level-11 numbers, and
+    the determinism/perf baseline — rescaling it would invalidate all of them for no
+    fidelity gain. The *decision* cadence (separate from the tick) is now an explicit
+    config (`DECISION_EVERY`, env `CR_DECISION_EVERY`); see §13.
 - `[SIMPLIFIED]` **L — Hit cadence applies damage at cooldown edge**, not at the
   specific damage frame within an attack animation.
 
@@ -150,6 +155,10 @@ logic that *is* the strategy. Entire mechanic classes were absent:
 - `[MISSING]` **M — Evolutions** (evolved stats/behavior + evo-cycle counter).
 - `[SIMPLIFIED]` **M — Multi-unit spawn formation** uses a simple line offset, not
   CR's per-card spawn formations/positions.
+  - `[RESOLVED 2026-11-12]` (M6) `spawn_offset` now places grouped spawns in compact
+    per-count formations — side-by-side pairs, triangles, 2×2 squares, diamond+centre,
+    2×3 blocks, and a centred grid for larger counts — instead of one row. Offsets stay
+    <~1 tile (on/next to the deploy tile) and are pure fixed-point (deterministic).
 
 ## 4. Spells & status effects
 
@@ -163,6 +172,12 @@ The spell system is **instant area damage + optional stun only**
   (slow), Lightning (3 highest-HP targets + stun), Fireball/Rocket knockback.
 - `[SIMPLIFIED]` **M — Spells are near-instant** (high projectile speed), so there
   is no cast→travel dodge window as in CR.
+  - `[RESOLVED 2026-11-12]` (M3) Spells now commit to their ground point at cast time
+    but resolve a short, data-plausible number of ticks later (a "fuse" derived from a
+    fixed drop distance ÷ the card's projectile speed: Zap/Lightning ~0.25 s,
+    Fireball/Rocket ~0.5 s; effect-only spells ~0.3 s). Damage/crown/effect behaviour is
+    unchanged — only time-shifted — so a fast troop can walk out of the blast. Pending
+    casts are part of reset() state (replay-deterministic).
 - `[SIMPLIFIED]` **L — Crown-tower damage reduction** is a flat `crown_pct`
   (~30%); real per-spell crown-tower damage values differ.
 
@@ -199,9 +214,19 @@ The spell system is **instant area damage + optional stun only**
 
 - `[SIMPLIFIED]` **M — Leash distances are invented** (`sight + 2.5`), not CR
   values; retarget/lock thresholds therefore differ.
+  - `[RESOLVED 2026-11-12]` (M1) The invented `sight + 2.5` leash is gone: a unit now
+    holds its committed target only while the target stays inside the unit's own aggro
+    radius (`sight.max(range)`, data-derived). Once the target leaves that radius the
+    unit re-acquires — for a lane pusher that means falling back to marching on the
+    nearest tower. Building-only targeters still never drop a building objective.
 - `[SIMPLIFIED]` **M — Acquisition is nearest-valid-in-sight.** CR has specific
   target-priority and aggro-pull rules (pulling a unit off its lane) that are only
   approximated.
+  - `[RESOLVED 2026-11-12]` (M1) Target priority is honored where the data supports it:
+    buildings-only (hard filter) and building-preferring (X-Bow) units now also re-scan
+    off a currently-held troop so an in-sight building can take priority. Acquisition
+    stays deterministic (nearest valid; ties → lower entity index). General aggro-pull
+    across lanes remains an approximation.
 - `[SIMPLIFIED]` **L — Tower targeting** locks nearest and holds; real tower
   retarget timing/priority is approximated.
 
@@ -209,6 +234,9 @@ The spell system is **instant area damage + optional stun only**
 
 - `[SIMPLIFIED]` **M — Flat 1.0 s deploy time** for all cards; real deploy/placement
   times vary by card.
+  - `[RESOLVED 2026-11-12]` (M4) `spawn_unit` uses each card's own `deploy_ticks`
+    (from the real `deploy_time`, e.g. Golem 3.0 s, Mortar/X-Bow 3.5 s), falling back to
+    the named `DEPLOY_TICKS` (1.0 s) constant only when a card has none.
 - `[MISSING]` **M — Enemy-side deploys** (see Miner/Graveyard/Drill/Barrel in §3).
 - `[SIMPLIFIED]` **L — Deployable rows** use `y < 15` (river rows 15–16); close to
   but not pixel-matched with CR's deploy boundary and the exact pocket shape after
@@ -226,6 +254,10 @@ The spell system is **instant area damage + optional stun only**
 
 - `[SIMPLIFIED]` **M — Overtime tiebreak** = lowest remaining tower HP; approximates
   CR's rule but isn't matched to a specific mode.
+  - `[RESOLVED 2026-11-12]` (M5) Overtime is now sudden death: the first player to pull
+    ahead on crowns (destroy a tower) in OT wins immediately. A same-tick exchange that
+    leaves crowns tied keeps play going. Lowest-remaining-tower-HP is used only as the
+    final fallback when OT expires still tied (a dead-even board is a draw).
 - `[SIMPLIFIED]` **L — Tower stats** (range 7.5/7.0, hit speeds, HP) are documented
   level-11 values, not verified against authoritative tables.
 - Correct: Princess = 1 crown, King = 3 and ends the match; king dormant until
@@ -235,6 +267,12 @@ The spell system is **instant area damage + optional stun only**
 
 - `[SIMPLIFIED]` **M — Projectiles home to the target entity**; most real CR
   projectiles commit to a position and can be dodged by movement.
+  - `[RESOLVED 2026-11-12]` (M2) Homing is now per-shot: single-target "tracking" shots
+    (Musketeer, Archers, Dart Goblin, …) home to the entity (matching the decoded
+    `projectiles.toml`, where direct shots are `Homing = true`), while splash/area shots
+    (Bomber, Wizard, Baby Dragon, Sparky, Mortar, …) commit to the fire-time ground point
+    and are dodgeable. Driven by `proj_homes()` with an explicit per-card `homing` override
+    (the real `Homing` flag). Pierce/roll shots never home (unchanged).
 - `[MISSING]` **L — Projectile-specific behavior:** pierce (Magic Archer, Dart
   Goblin line), returning axe (Executioner), bounce/pierce (Bowler), recoil.
 
@@ -305,6 +343,11 @@ The spell system is **instant area damage + optional stun only**
 - `[SIMPLIFIED]` **M — Decision cadence.** The server requests actions at 5 Hz
   (every 4 ticks); CR lets you act on any frame. Fine for deploys (instantaneous)
   but caps action granularity.
+  - `[RESOLVED 2026-11-12]` (M7) Cadence is now an explicit, documented config:
+    `match.DECISION_EVERY` (env `CR_DECISION_EVERY`, default 4 = 5 Hz), threaded through
+    `run_match(..., decision_every=…)` and the server. Operators can trade granularity
+    for round-trips (e.g. `CR_DECISION_EVERY=1` = act every tick) without touching the
+    core 20 Hz tick. Changing the tick rate itself is deliberately deferred (see §2).
 
 ## 14. Scope not modeled at all
 
