@@ -113,10 +113,22 @@ not implemented.
   newcomer does NOT steal aggro (CR pull mechanic), and it re-acquires only once the old
   target leaves the leash. Tests: `commitment_holds_then_reacquires_beyond_leash`,
   `acquisition_ties_break_to_lower_id`. `cargo test --release`: 40/40 pass. Commit: c1beb1a
-- [ ] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
+- [x] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
   against the decoded `CrownTowerDamagePercent` / `{BaseDamage,TowerDamage}` structs and
   correct any that are placeholders. Acceptance: the spells' crown percentages match the
   tables; note any corrected in the checklist.
+  DONE: crown reduction lives in each spell's `characters/*.toml` as a NEGATIVE
+  `CrownTowerDamagePercent` (crown% = 100 + value), or as a `{BaseDamage,TowerDamage}` AEO
+  struct (crown% = round(TowerDamage/BaseDamage×100)). Verified all 11 modelled spells.
+  CORRECTED 2 placeholders: **poison 30→22** (−78) and **earthquake 33→60** (−40,
+  `BuildingDamagePercent=350` is separate and already not modelled as crown). Confirmed
+  already-correct: arrows 20 (−80), fireball 23 (−77), rocket 23 (−77), lightning 25 (−75),
+  snowball 25 (−75), the_log 13 (−87), tornado 30 (−70), zap 25 (19/75), freeze 26 (15/58).
+  NOT in the decoded dump (no crown field on their projectiles): barbarian_barrel and
+  royal_delivery — left at 35 and flagged as unverified-from-data. The sole
+  `CrownTowerDamagePercent` for a *projectile* (FireballSpellRocketMan −70) is an event card,
+  out of scope. Test: `spell_crown_percentages_match_decoded_tables`. `cargo test --release`:
+  41/41 pass. Commit: __PENDING__
 - [ ] **A7 — Curse / Clone / stretch cards (Mother Witch, Goblin Curse, Clone, Suspicious
   Bush, Goblinstein).** Implement the ones whose mechanic maps cleanly; for any that need a
   genuinely new system beyond reasonable scope, mark `[~]` DEFERRED with the specific reason

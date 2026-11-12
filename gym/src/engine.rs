@@ -4094,3 +4094,31 @@ mod aggro_tests {
         assert_eq!(target_of(&eng, aid), Some(e1), "equidistant tie resolves to the lower id");
     }
 }
+
+// [A6] Crown-tower per-spell damage percentages match the decoded tables.
+#[cfg(test)]
+mod crown_tests {
+    use super::*;
+    use crate::cards::Library;
+
+    #[test]
+    fn spell_crown_percentages_match_decoded_tables() {
+        let lib = Library::default_lib();
+        let pct = |n: &str| lib.defs[lib.id_of(n).unwrap()].crown_pct;
+        // Spells whose crown reduction is stored as `CrownTowerDamagePercent`
+        // (negative): crown% = 100 + value.
+        assert_eq!(pct("arrows"), 20, "arrows -80");
+        assert_eq!(pct("fireball"), 23, "fireball -77");
+        assert_eq!(pct("rocket"), 23, "rocket -77");
+        assert_eq!(pct("lightning"), 25, "lightning -75");
+        assert_eq!(pct("snowball"), 25, "snowball -75");
+        assert_eq!(pct("the_log"), 13, "log -87");
+        assert_eq!(pct("tornado"), 30, "tornado -70");
+        assert_eq!(pct("poison"), 22, "poison -78 (corrected from 30)");
+        assert_eq!(pct("earthquake"), 60, "earthquake -40 (corrected from 33)");
+        // Spells whose crown damage is a {BaseDamage, TowerDamage} struct:
+        // crown% = round(TowerDamage / BaseDamage * 100).
+        assert_eq!(pct("zap"), 25, "zap 19/75");
+        assert_eq!(pct("freeze"), 26, "freeze 15/58");
+    }
+}
