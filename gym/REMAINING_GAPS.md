@@ -52,13 +52,21 @@ not implemented.
   `mighty_miner_lanebomb_damages_and_switches_lane`, `monk_deflect_reduces_incoming_damage`,
   `little_prince_summons_guardian`, `boss_bandit_warps_forward_and_cloaks`,
   `champion_abilities_are_deterministic`. `cargo test --release`: 29/29 pass. Commit: 65abdcb
-- [ ] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
+- [x] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
   weak projectile (per-pellet damage); real Hunter deals many pellets (big point-blank
   burst, falls off with range). Model its effective multi-pellet damage from the data
   (pellet count × per-pellet) without overpowering it at range. Firecracker should apply
   its self-recoil knockback on firing. Acceptance: Hunter kills far faster point-blank
   than at max range; a test covers both; Firecracker recoils. Resolve real numbers from
   the tables (HunterProjectile / `MultipleProjectiles` / Firecracker recoil fields).
+  DONE: added `pellets` + `recoil` card fields. Hunter `pellets:10` (`MultipleProjectiles=10`;
+  per-pellet base 33 => L11 84, which is exactly today's `damage:84`); the fired shot now
+  carries `per_hit × pellets_that_connect` via `Engine::shotgun_damage` — all 10 point-blank,
+  falling linearly to 1 at max range (gap/range), so 840 point-blank vs 84 at the edge, no
+  range buff. Firecracker `recoil:1.0` (`AttackPushBack=1000`) shoves the shooter backward
+  (away from target, river/bounds-respected) once per shot. Tests:
+  `hunter_shotgun_falloff_is_monotonic`, `hunter_fires_bigger_burst_point_blank_than_far`,
+  `firecracker_recoils_backward_on_firing`. `cargo test --release`: 32/32 pass. Commit: __PENDING__
 - [ ] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
   (and herself) in a radius. Model it (reuse the area-effect/heal system — see `Heal`
   `SpellEffect` and `apply_area_effects`). Acceptance: allies in her radius regain hp over

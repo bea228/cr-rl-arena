@@ -1593,7 +1593,8 @@
    "sight": 5.5,
    "deploy_time": 1.0,
    "targets": "both",
-   "projectile_speed": 6.0
+   "projectile_speed": 6.0,
+   "pellets": 10
   },
   "royal_recruits": {
    "elixir": 7,
@@ -1707,7 +1708,8 @@
    "targets": "both",
    "splash_radius": 1.0,
    "projectile_speed": 5.0,
-   "knockback": 1.0
+   "knockback": 1.0,
+   "recoil": 1.0
   },
   "skeleton_barrel": {
    "elixir": 3,

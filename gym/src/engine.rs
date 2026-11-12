@@ -1454,7 +1454,9 @@ impl Engine {
                                 target: if homing { Some(snap.id[tj]) } else { None },
                                 aim: tpos,
                                 speed: d.proj_speed,
-                                damage: per_hit,
+                                // [shot] Hunter shotgun: the shot carries per-hit x the
+                                // number of pellets that connect at this firing range.
+                                damage: Self::shotgun_damage(per_hit, d.pellets, gap, d.range),
                                 splash: d.splash,
                                 crown_pct: 100,
                                 stun_ticks: d.on_hit_freeze_ticks, // [proj] Electro stun on hit
@@ -1507,6 +1509,18 @@ impl Engine {
                         // [inv] Royal Ghost becomes targetable for a short window around each hit.
                         if d.invisible {
                             set_reveal[i] = Some(REVEAL_TICKS);
+                        }
+                        // [shot] Firecracker self-recoil: jump backward (away from the
+                        // target) by `recoil` tiles on each shot. Ground-river + bounds
+                        // respected; applied here so it fires exactly once per shot.
+                        if d.recoil.0 > 0 {
+                            let back = ipos.sub(tpos).step_toward(d.recoil);
+                            let np = block_river(
+                                ipos,
+                                Self::clamp_pos(V2::new(ipos.x + back.x, ipos.y + back.y)),
+                                d,
+                            );
+                            set_pos[i] = Some(np);
                         }
                     }
                 }
@@ -1805,6 +1819,24 @@ impl Engine {
     /// [charge] Build an instantly-detonating splash projectile at `pos` (used for
     /// Mega Knight deploy damage and jump-landing area damage). It lands next tick,
     /// hitting enemies within `radius` per the caster's `targets`.
+    /// [shot] Effective shotgun shot damage: `base` per pellet times the number of
+    /// pellets that connect. All `pellets` land point-blank; the hit count falls
+    /// linearly to 1 at max range (surface gap == range). `pellets <= 1` => the
+    /// ordinary single-shot damage, so every non-shotgun card is unaffected.
+    fn shotgun_damage(base: i32, pellets: i32, gap: Fx, range: Fx) -> i32 {
+        if pellets <= 1 {
+            return base;
+        }
+        if range.0 <= 0 {
+            return base * pellets;
+        }
+        let g = gap.max(Fx(0)).min(range);
+        let frac = Fx::from_int(1) - g.div(range); // 1 at point-blank, 0 at max range
+        let hits_fx = Fx::from_int(pellets as i64).mul(frac) + Fx::from_f64(0.5);
+        let hits = hits_fx.to_int_floor().clamp(1, pellets as i64) as i32;
+        base * hits
+    }
+
     fn instant_splash(owner: u8, pos: V2, damage: i32, radius: Fx, targets: Targets) -> Projectile {
         let r = if radius.0 > 0 { radius } else { Fx::from_f64(1.0) };
         Projectile {
@@ -3649,5 +3681,100 @@ mod champ_ability_tests {
             trail
         };
         assert_eq!(run(), run(), "champion ability paths must replay identically");
+    }
+}
+
+// [shot] A2: Hunter shotgun burst (range falloff) + Firecracker self-recoil.
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    // The pellet model: all pellets land point-blank, falling to one at max range,
+    // and non-shotgun cards (pellets <= 1) are untouched.
+    #[test]
+    fn hunter_shotgun_falloff_is_monotonic() {
+        let base = 84;
+        let range = Fx::from_f64(4.0);
+        let pb = Engine::shotgun_damage(base, 10, Fx::from_f64(0.0), range);
+        let mid = Engine::shotgun_damage(base, 10, Fx::from_f64(2.0), range);
+        let far = Engine::shotgun_damage(base, 10, range, range);
+        assert_eq!(pb, base * 10, "all 10 pellets connect point-blank");
+        assert_eq!(far, base, "one pellet connects at max range");
+        assert!(pb > mid && mid > far, "monotonic range falloff: {pb} {mid} {far}");
+        // a plain single-shot card is unaffected by the shotgun path
+        assert_eq!(Engine::shotgun_damage(100, 1, Fx::from_f64(0.0), range), 100);
+    }
+
+    // In the live engine the Hunter's fired shot carries a far larger payload
+    // point-blank than at the edge of its range.
+    #[test]
+    fn hunter_fires_bigger_burst_point_blank_than_far() {
+        fn shot_damage(center_gap: f64) -> i32 {
+            let mut eng = Engine::new(Library::default_lib());
+            let hunter = eng.lib.id_of("hunter").unwrap();
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, hunter, at(9.0, 8.0));
+            eng.spawn_unit(1, knight, at(9.0, 8.0 + center_gap));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            for _ in 0..90 {
+                // pin both so the firing range equals `center_gap` exactly
+                for e in eng.entities.iter_mut() {
+                    if e.owner == 0 {
+                        e.pos = at(9.0, 8.0);
+                    } else {
+                        e.pos = at(9.0, 8.0 + center_gap);
+                    }
+                }
+                eng.step(noop());
+                if let Some(p) = eng.projectiles.iter().find(|p| p.owner == 0) {
+                    return p.damage;
+                }
+            }
+            0
+        }
+        let pb = shot_damage(1.2); // point-blank
+        let far = shot_damage(5.0); // near the edge of range
+        assert!(pb > 0 && far > 0, "hunter fired in both cases: pb={pb} far={far}");
+        assert!(pb >= 84 * 6, "point-blank fires most of the 10 pellets: {pb}");
+        assert!(pb > far * 3, "point-blank burst dwarfs the max-range shot: {pb} vs {far}");
+    }
+
+    // Firecracker jumps backward (away from its target) each time it fires.
+    #[test]
+    fn firecracker_recoils_backward_on_firing() {
+        let mut eng = Engine::new(Library::default_lib());
+        let fc = eng.lib.id_of("firecracker").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, fc, at(9.0, 8.0));
+        let fc_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 12.0)); // in range (toward +y)
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        let fc_y = |eng: &Engine| eng.entities.iter().find(|e| e.id == fc_id).unwrap().pos.y.to_f64();
+        for _ in 0..140 {
+            let before = fc_y(&eng);
+            eng.step(noop());
+            if eng.projectiles.iter().any(|p| p.owner == 0) {
+                let after = fc_y(&eng);
+                assert!(
+                    after < before - 0.5,
+                    "firecracker recoils backward when it fires: {before} -> {after}"
+                );
+                return;
+            }
+        }
+        panic!("firecracker never fired");
     }
 }

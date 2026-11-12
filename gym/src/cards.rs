@@ -139,6 +139,11 @@ pub struct CardDef {
     // [kb] knockback & pull
     pub knockback: Fx,   // [kb] push distance (tiles) this card's attack/spell impact applies
     pub roll_range: Fx,  // [kb] travel distance (tiles) of a rolling-line projectile (0 = not rolling)
+    // [shot] Hunter shotgun pellets: effective shot damage = per-hit x pellets-that-connect,
+    // which is `pellets` point-blank and falls to 1 at max range. 1 = ordinary single shot.
+    pub pellets: i32,
+    // [shot] Firecracker self-recoil (tiles) applied to the shooter each time it fires.
+    pub recoil: Fx,
     pub charge: Option<Charge>,
     // [charge] Dash / jump (leap) variants: Bandit dash, Mega Knight jump.
     pub dash_min: Fx,            // target must be at least this far to trigger a leap
@@ -343,6 +348,11 @@ struct RawCard {
     knockback: Option<f64>,   // [kb] push distance in tiles
     pierce: Option<bool>,     // [kb] rolling-pierce attack/spell
     roll_range: Option<f64>,  // [kb] rolling-line travel distance in tiles
+    // [shot] Hunter shotgun: number of pellets fired per shot; effective damage
+    // scales with how many connect (all at point-blank, few at max range).
+    pellets: Option<i64>,
+    // [shot] Firecracker: self-recoil distance (tiles) the shooter jumps backward on firing.
+    recoil: Option<f64>,
     charge: Option<RawCharge>,
     // [charge] new mechanic inputs (all optional -> existing cards still load)
     // (melee knockback reuses the shared [kb] `knockback` JSON key above)
@@ -497,6 +507,8 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         knockback: Fx::from_f64(r.knockback.unwrap_or(0.0)), // [kb]
         pierce: r.pierce.unwrap_or(false),                   // [kb]
         roll_range: Fx::from_f64(r.roll_range.unwrap_or(0.0)), // [kb]
+        pellets: r.pellets.unwrap_or(1).max(1) as i32,         // [shot]
+        recoil: Fx::from_f64(r.recoil.unwrap_or(0.0)),         // [shot]
         charge,
         // [charge] new mechanic fields
         dash_min,
