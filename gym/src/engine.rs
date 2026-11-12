@@ -1748,10 +1748,19 @@ impl Engine {
         }
 
         // 2. Acquire: nearest valid in sight, else nearest tower/building to march on.
+        // [A5] Ties on distance break deterministically toward the LOWER entity id
+        // (not merely scan order), so acquisition never depends on entity storage
+        // order. `better(cur, j, gap)` == "(gap, id) is strictly ahead of cur".
         let sight = d.sight.max(d.range);
         let mut best_sight: Option<(usize, Fx)> = None;
         let mut best_march: Option<(usize, Fx)> = None;
         let mut best_bldg: Option<(usize, Fx)> = None; // [ramp] nearest building/tower in sight (X-Bow)
+        let better = |cur: Option<(usize, Fx)>, j: usize, gap: Fx| -> bool {
+            match cur {
+                None => true,
+                Some((cj, cg)) => gap.0 < cg.0 || (gap.0 == cg.0 && snap.id[j] < snap.id[cj]),
+            }
+        };
         for j in 0..snap.x.len() {
             if !valid(j) {
                 continue;
@@ -1762,17 +1771,15 @@ impl Engine {
             } else {
                 snap.is_tower[j]
             };
-            if march_ok && best_march.map_or(true, |(_, bd)| gap < bd) {
+            if march_ok && better(best_march, j, gap) {
                 best_march = Some((j, gap));
             }
             if gap <= sight {
-                if best_sight.map_or(true, |(_, bd)| gap < bd) {
+                if better(best_sight, j, gap) {
                     best_sight = Some((j, gap));
                 }
                 // [ramp] track the nearest building/tower for building-priority targeters
-                if (snap.is_tower[j] || snap.is_building[j])
-                    && best_bldg.map_or(true, |(_, bd)| gap < bd)
-                {
+                if (snap.is_tower[j] || snap.is_building[j]) && better(best_bldg, j, gap) {
                     best_bldg = Some((j, gap));
                 }
             }
@@ -3995,5 +4002,95 @@ mod mix_tests {
             v
         };
         assert_eq!(run(), run(), "mixed deploy must replay identically");
+    }
+}
+
+// [A5] Targeting commitment + deterministic acquisition tie-break.
+#[cfg(test)]
+mod aggro_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+    fn pin(eng: &mut Engine, id: u32, p: V2) {
+        for e in eng.entities.iter_mut() {
+            if e.id == id {
+                e.pos = p;
+            }
+        }
+    }
+    fn target_of(eng: &Engine, id: u32) -> Option<u32> {
+        eng.entities.iter().find(|e| e.id == id).unwrap().target
+    }
+
+    // A committed target is held while it stays within leash, is NOT stolen by a
+    // closer newcomer, and is only re-acquired once it leaves the leash.
+    #[test]
+    fn commitment_holds_then_reacquires_beyond_leash() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap(); // sight 5.5, range 1.2
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        let aid = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(9.0, 12.0)); // surf ~3.5, inside sight
+        let a_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, aid, at(9.0, 8.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, aid), Some(a_id), "acquires the enemy in sight");
+
+        // a closer enemy appears -- it must NOT steal the committed target.
+        eng.spawn_unit(1, knight, at(9.0, 9.5)); // surf ~1.0, much closer
+        let b_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        for _ in 0..3 {
+            pin(&mut eng, aid, at(9.0, 8.0));
+            pin(&mut eng, a_id, at(9.0, 12.0));
+            pin(&mut eng, b_id, at(9.0, 9.5));
+            eng.step(noop());
+            assert_eq!(target_of(&eng, aid), Some(a_id), "closer newcomer must not steal aggro");
+        }
+
+        // push the committed target out past the leash (surf ~6.5 > sight 5.5): now it
+        // re-acquires -- the nearest valid enemy, which is B.
+        for _ in 0..2 {
+            pin(&mut eng, aid, at(9.0, 8.0));
+            pin(&mut eng, a_id, at(9.0, 15.0));
+            pin(&mut eng, b_id, at(9.0, 9.5));
+            eng.step(noop());
+        }
+        assert_eq!(target_of(&eng, aid), Some(b_id), "re-acquires once the old target leaves leash");
+    }
+
+    // On a distance tie, acquisition is deterministic: the lower entity id wins,
+    // regardless of entity storage order.
+    #[test]
+    fn acquisition_ties_break_to_lower_id() {
+        let mut eng = Engine::new(Library::default_lib());
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, knight, at(9.0, 8.0));
+        let aid = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(8.0, 11.0)); // equal distance from (9,8)
+        let e1 = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(10.0, 11.0)); // mirror: same distance
+        let e2 = eng.entities.last().unwrap().id;
+        assert!(e1 < e2);
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, aid, at(9.0, 8.0));
+        pin(&mut eng, e1, at(8.0, 11.0));
+        pin(&mut eng, e2, at(10.0, 11.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, aid), Some(e1), "equidistant tie resolves to the lower id");
     }
 }

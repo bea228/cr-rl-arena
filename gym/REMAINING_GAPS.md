@@ -98,11 +98,21 @@ not implemented.
   `goblin_gang_deploys_three_stab_plus_three_spear`, `rascals_deploys_one_boy_plus_two_girls`,
   `mix_card_deck_legality`, `mixed_deploy_is_deterministic`. `cargo test --release`: 38/38
   pass. Commit: e4b43a1
-- [ ] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
+- [x] **A5 — Targeting/aggro exactness.** M1 set the leash to `sight.max(range)`; refine
   acquisition toward CR's real rules where the data supports it: correct retarget timing,
   and not dropping a committed target prematurely. Keep it deterministic (nearest valid;
   ties → lower entity id). Acceptance: a test showing a unit holds its committed target
   within leash and only re-acquires when it should.
+  DONE: M1's `sight.max(range)` leash is already the CR-plausible aggro radius (kept; the
+  M1 regression test still passes, so I did NOT widen it — CR drops a target that leaves
+  sight). The concrete refinement: acquisition tie-breaks were implicit (scan/index order);
+  made them an explicit `(gap, id)` lexicographic rule via a `better()` comparator across
+  all three scans (march / sight / building-priority) so equal-distance targets always
+  resolve to the LOWER entity id independent of entity storage order. Locked in the
+  commitment contract with tests: a committed target is held within leash, a closer
+  newcomer does NOT steal aggro (CR pull mechanic), and it re-acquires only once the old
+  target leaves the leash. Tests: `commitment_holds_then_reacquires_beyond_leash`,
+  `acquisition_ties_break_to_lower_id`. `cargo test --release`: 40/40 pass. Commit: __PENDING__
 - [ ] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
   against the decoded `CrownTowerDamagePercent` / `{BaseDamage,TowerDamage}` structs and
   correct any that are placeholders. Acceptance: the spells' crown percentages match the
