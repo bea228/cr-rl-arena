@@ -112,7 +112,7 @@ not implemented.
   commitment contract with tests: a committed target is held within leash, a closer
   newcomer does NOT steal aggro (CR pull mechanic), and it re-acquires only once the old
   target leaves the leash. Tests: `commitment_holds_then_reacquires_beyond_leash`,
-  `acquisition_ties_break_to_lower_id`. `cargo test --release`: 40/40 pass. Commit: __PENDING__
+  `acquisition_ties_break_to_lower_id`. `cargo test --release`: 40/40 pass. Commit: c1beb1a
 - [ ] **A6 — Crown-tower per-spell damage.** Verify each spell's `crown_tower_damage_pct`
   against the decoded `CrownTowerDamagePercent` / `{BaseDamage,TowerDamage}` structs and
   correct any that are placeholders. Acceptance: the spells' crown percentages match the
