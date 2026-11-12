@@ -66,7 +66,7 @@ not implemented.
   range buff. Firecracker `recoil:1.0` (`AttackPushBack=1000`) shoves the shooter backward
   (away from target, river/bounds-respected) once per shot. Tests:
   `hunter_shotgun_falloff_is_monotonic`, `hunter_fires_bigger_burst_point_blank_than_far`,
-  `firecracker_recoils_backward_on_firing`. `cargo test --release`: 32/32 pass. Commit: __PENDING__
+  `firecracker_recoils_backward_on_firing`. `cargo test --release`: 32/32 pass. Commit: c362471
 - [ ] **A3 — Battle Healer heal aura.** Battle Healer continuously heals nearby allies
   (and herself) in a radius. Model it (reuse the area-effect/heal system — see `Heal`
   `SpellEffect` and `apply_area_effects`). Acceptance: allies in her radius regain hp over
