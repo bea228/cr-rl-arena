@@ -18,7 +18,7 @@ mod env;
 mod fixed;
 mod rng;
 
-use env::Battle;
+use env::{Battle, PlayerView};
 
 /// Trivial smoke-test class to validate the build/import pipeline.
 /// Replaced by the real `Env` as the engine lands.
@@ -52,6 +52,7 @@ impl BuildCheck {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BuildCheck>()?;
     m.add_class::<Battle>()?;
+    m.add_class::<PlayerView>()?;
     env::register_constants(m)?;
     m.add("__doc__", "cr-sim native core (fixed-point deterministic engine)")?;
     Ok(())
