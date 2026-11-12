@@ -51,7 +51,7 @@ not implemented.
   decoded tables store only the leveled stat-tag `ability_cooldown`, not its numeric. Tests:
   `mighty_miner_lanebomb_damages_and_switches_lane`, `monk_deflect_reduces_incoming_damage`,
   `little_prince_summons_guardian`, `boss_bandit_warps_forward_and_cloaks`,
-  `champion_abilities_are_deterministic`. `cargo test --release`: 29/29 pass. Commit: a8bfadb
+  `champion_abilities_are_deterministic`. `cargo test --release`: 29/29 pass. Commit: 65abdcb
 - [ ] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
   weak projectile (per-pellet damage); real Hunter deals many pellets (big point-blank
   burst, falls off with range). Model its effective multi-pellet damage from the data
