@@ -98,6 +98,9 @@ pub struct Engine {
     // [eco] last card each player successfully deployed (for Mirror). Part of
     // reset() state so matches replay reproducibly. None = nothing played yet.
     last_played: [Option<usize>; 2],
+    // [path] Cross-tick flow-field memo (NOT replay state): a pure cache of
+    // BFS routing fields, rebuilt on demand. See PathCache.
+    path_cache: PathCache,
 }
 
 impl Engine {
@@ -119,6 +122,7 @@ impl Engine {
             king_down_dmg_seen: [false, false],
             last_crowns_for_ot: [0, 0],
             last_played: [None, None], // [eco]
+            path_cache: PathCache::default(), // [path]
         }
     }
 
@@ -170,6 +174,7 @@ impl Engine {
         self.king_down_dmg_seen = [false, false];
         self.last_crowns_for_ot = [0, 0];
         self.last_played = [None, None]; // [eco]
+        self.path_cache = PathCache::default(); // [path] drop any memo from a prior match
 
         self.deck = decks.unwrap_or_else(|| [self.default_deck(), self.default_deck()]);
         for p in 0..2 {
@@ -991,13 +996,17 @@ impl Engine {
         let snap = Snap::build(&self.entities, &self.lib);
 
         // [path] Solid structures (towers + buildings) that ground units route
-        // around. Collected once per tick in entity order so the local-avoidance
-        // scan below stays deterministic (no HashMap iteration, tiny O(structures)
-        // list — not every troop). A unit still walks straight up to the one
-        // structure it is actually attacking; that one is excluded per-unit.
+        // around. Collected once per tick in entity order so the grid build stays
+        // deterministic (tiny O(structures) list — not every troop).
         let obstacles: Vec<usize> = (0..n)
             .filter(|&j| snap.alive[j] && (snap.is_tower[j] || snap.is_building[j]))
             .collect();
+        // [path] Per-tick tile passability grid + the persistent flow-field memo
+        // (taken out of self so the movement loop can borrow it mutably alongside
+        // the immutable entity/lib borrows; restored at the end of the tick).
+        let grid = PathGrid::build(&snap, &obstacles);
+        let mut path_cache = std::mem::take(&mut self.path_cache);
+        path_cache.sync(&grid);
 
         let mut dmg = vec![0i32; n];
         let mut stun_add = vec![0i32; n];
@@ -1290,7 +1299,11 @@ impl Engine {
                     }
                 }
             } else if mover {
-                let goal = goal_point(ipos, d, tpos);
+                // [path] True tile pathfinding: steer toward the next waypoint on
+                // the shortest route to the target — around the river, towers and
+                // buildings — read from a cached BFS flow field. Flyers go straight.
+                let goal =
+                    path_goal(ipos, tpos, tj, d.flying, d.jumps_river, &snap, &grid, &mut path_cache);
                 let charged = d.charge.map_or(false, |c| e.charge_dist >= c.min_distance);
                 let mut speed = if charged {
                     d.speed.mul(d.charge.unwrap().speed_mult)
@@ -1303,18 +1316,7 @@ impl Engine {
                 if e.slow > 0 {
                     speed = speed.mul(Fx::from_f64(0.65));
                 }
-                // [path] Local avoidance: if the straight step toward the sub-goal
-                // would drive this ground unit into a solid structure that is NOT
-                // its target, steer tangentially around that structure instead.
-                // Flyers (and river-jumpers only w.r.t. the river) keep straight.
-                let mut mv = goal.sub(ipos).step_toward(speed);
-                if !d.flying {
-                    if let Some(av) =
-                        avoid_structures(ipos, goal, speed, d.radius, tj, &snap, &obstacles)
-                    {
-                        mv = av;
-                    }
-                }
+                let mv = goal.sub(ipos).step_toward(speed);
                 let mut np = V2::new(ipos.x + mv.x, ipos.y + mv.y);
                 np = block_river(ipos, np, d);
                 np = Self::clamp_pos(np);
@@ -1401,6 +1403,9 @@ impl Engine {
 
         // resolve damage, deaths, crowns, king activation
         self.apply_damage(&dmg, &stun_add, &slow_add);
+
+        // [path] return the flow-field memo to self for reuse next tick
+        self.path_cache = path_cache;
     }
 
     /// Target selection with commitment: keep the currently-locked target while
@@ -2363,14 +2368,73 @@ fn dist_point_segment(p: V2, a: V2, b: V2) -> Fx {
     p.sub(proj).len()
 }
 
-fn goal_point(ipos: V2, d: &crate::cards::CardDef, tpos: V2) -> V2 {
-    if d.flying || d.jumps_river || same_side(ipos.y, tpos.y) {
+/// [path] How many tiles of the flow-field gradient to walk when choosing a
+/// steering waypoint (the string-pull horizon for smoothing around obstacles).
+const PATH_LOOKAHEAD: usize = 12;
+
+/// [path] Fixed neighbour order (orthogonals first, then diagonals) so every
+/// BFS expansion and gradient tie-break is deterministic.
+const NEIGHBORS: [(i64, i64); 8] =
+    [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1)];
+
+/// [path] Steering waypoint for a ground unit at `ipos` whose target's nearest
+/// surface point is `tpos` (target entity index `tj`). If the straight segment
+/// to the target is clear it heads straight there; otherwise it descends a
+/// cached BFS flow field toward the target — routing around the river, towers
+/// and buildings — and string-pulls to the farthest visible tile on that route.
+/// Flyers ignore terrain. All fixed-point integer math — bit-reproducible.
+fn path_goal(
+    ipos: V2,
+    tpos: V2,
+    tj: usize,
+    flying: bool,
+    jumps: bool,
+    snap: &Snap,
+    grid: &PathGrid,
+    cache: &mut PathCache,
+) -> V2 {
+    if flying {
         return tpos;
     }
-    let bx = nearest_bridge_x(ipos.x);
-    let off = RIVER_HALF + Fx::from_f64(0.4);
-    let mouth_y = if tpos.y > ipos.y { RIVER_Y + off } else { RIVER_Y - off };
-    V2::new(bx, mouth_y)
+    // Fast path: an unobstructed straight shot (open lane, or lined up with a
+    // bridge) needs no routing — this keeps open-field motion a straight line.
+    if grid.los(ipos, tpos, jumps) {
+        return tpos;
+    }
+    let (ucx, ucy) = PathGrid::tile_of(ipos);
+    let field = cache.field_for(grid, snap, tj, jumps);
+    if field[grid.idx(ucx, ucy)] == u16::MAX {
+        return tpos; // unreachable (e.g. boxed in) — fall back to a straight push
+    }
+    // Walk the gradient down toward the target for up to PATH_LOOKAHEAD tiles.
+    let mut tiles: Vec<(i64, i64)> = Vec::with_capacity(PATH_LOOKAHEAD);
+    let (mut cx, mut cy) = (ucx, ucy);
+    for _ in 0..PATH_LOOKAHEAD {
+        if field[grid.idx(cx, cy)] == 0 {
+            break;
+        }
+        match grid.best_neighbor(field, cx, cy, jumps) {
+            Some((nx, ny)) if field[grid.idx(nx, ny)] < field[grid.idx(cx, cy)] => {
+                tiles.push((nx, ny));
+                cx = nx;
+                cy = ny;
+            }
+            _ => break,
+        }
+    }
+    if tiles.is_empty() {
+        return tpos;
+    }
+    // String-pull: aim at the farthest traced tile still in clear line of sight.
+    let mut goal = grid.tile_center(tiles[0].0, tiles[0].1);
+    for &(tx, ty) in tiles.iter().rev() {
+        let c = grid.tile_center(tx, ty);
+        if grid.los(ipos, c, jumps) {
+            goal = c;
+            break;
+        }
+    }
+    goal
 }
 
 /// Prevent ground units from entering the river except near a bridge.
@@ -2387,82 +2451,228 @@ fn block_river(old: V2, new: V2, d: &crate::cards::CardDef) -> V2 {
     new
 }
 
-/// [path] Deterministic local avoidance (reactive boundary-follow).
-///
-/// If the straight step `goal - ipos` would drive a ground unit of radius `rad`
-/// into a solid structure (`obstacles`, indices into `snap`) that is NOT its
-/// current target `tj`, return a tangential step of length `speed` that rounds
-/// the nearest such structure; otherwise `None` (caller keeps the straight step).
-///
-/// The obstacle is treated as an axis-aligned box inflated by `rad` (towers use
-/// their box half-extents; circular buildings use their collision radius — the
-/// same inflation `resolve_collisions` uses), so "would collide" is just "the
-/// next centre lands inside that inflated box". The side to pass on is chosen by
-/// the sign of the cross product of the heading with the vector to the obstacle
-/// centre: the unit peels off toward the side its goal already leans (the
-/// shorter way round). A perfectly head-on approach (cross == 0) breaks the tie
-/// toward lane centre. All fixed-point integer math — bit-reproducible.
-fn avoid_structures(
-    ipos: V2,
-    goal: V2,
-    speed: Fx,
-    rad: Fx,
-    tj: usize,
-    snap: &Snap,
-    obstacles: &[usize],
-) -> Option<V2> {
-    let mv = goal.sub(ipos).step_toward(speed);
-    if mv.x.0 == 0 && mv.y.0 == 0 {
-        return None;
-    }
-    let np = V2::new(ipos.x + mv.x, ipos.y + mv.y);
+/// [path] Tile passability grid for one tick: a tile is blocked when a solid
+/// structure (tower or building) occupies it. The river is handled per unit
+/// (river-jumpers ignore it), not baked into `blocked`. 18x32 tiles, row-major,
+/// rebuilt each tick from the obstacle list.
+struct PathGrid {
+    blocked: Vec<bool>, // len COLS*ROWS, index = cy*COLS + cx
+}
 
-    // Nearest structure whose inflated box the straight step would enter.
-    // Deterministic: scan is in entity order, ties resolve to the lower index.
-    let mut best: Option<(usize, Fx)> = None;
-    for &j in obstacles {
-        if j == tj {
-            continue; // never dodge the thing we are walking up to attack
-        }
-        let cx = snap.x[j];
-        let cy = snap.y[j];
-        let (hxj, hyj) = if snap.hx[j].0 > 0 || snap.hy[j].0 > 0 {
-            (snap.hx[j], snap.hy[j]) // box obstacle (tower)
-        } else {
-            (snap.rad[j], snap.rad[j]) // circular obstacle (building)
-        };
-        let ex = hxj + rad;
-        let ey = hyj + rad;
-        if (np.x - cx).abs() < ex && (np.y - cy).abs() < ey {
-            let dd = ipos.sub(V2::new(cx, cy)).len_sq();
-            if best.map_or(true, |(_, bd)| dd < bd) {
-                best = Some((j, dd));
+/// Inclusive tile ranges a footprint box [cx±ex] x [cy±ey] covers.
+fn footprint(cx: Fx, cy: Fx, ex: Fx, ey: Fx) -> (i64, i64, i64, i64) {
+    let ceil = |f: Fx| -((Fx(-f.0)).to_int_floor());
+    let lo_x = (cx - ex).to_int_floor();
+    let lo_y = (cy - ey).to_int_floor();
+    let mut hi_x = ceil(cx + ex) - 1;
+    let mut hi_y = ceil(cy + ey) - 1;
+    if hi_x < lo_x {
+        hi_x = lo_x;
+    }
+    if hi_y < lo_y {
+        hi_y = lo_y;
+    }
+    (lo_x, hi_x, lo_y, hi_y)
+}
+
+impl PathGrid {
+    fn build(snap: &Snap, obstacles: &[usize]) -> PathGrid {
+        let mut blocked = vec![false; (COLS * ROWS) as usize];
+        for &j in obstacles {
+            let (ex, ey) = if snap.hx[j].0 > 0 || snap.hy[j].0 > 0 {
+                (snap.hx[j], snap.hy[j]) // box (tower)
+            } else {
+                (snap.rad[j], snap.rad[j]) // circle (building)
+            };
+            let (lo_x, hi_x, lo_y, hi_y) = footprint(snap.x[j], snap.y[j], ex, ey);
+            for ty in lo_y..=hi_y {
+                for tx in lo_x..=hi_x {
+                    if tx >= 0 && tx < COLS && ty >= 0 && ty < ROWS {
+                        blocked[(ty * COLS + tx) as usize] = true;
+                    }
+                }
             }
         }
+        PathGrid { blocked }
     }
-    let (j, _) = best?;
 
-    let c = V2::new(snap.x[j], snap.y[j]);
-    let dir = goal.sub(ipos);
-    // Signed side of the obstacle centre relative to the heading (cross product).
-    // > 0: centre is left of heading  -> pass on its right.
-    // < 0: centre is right of heading -> pass on its left.
-    // = 0: dead-on                    -> tie-break toward lane centre.
-    let cross = dir.x.mul(c.y - ipos.y) - dir.y.mul(c.x - ipos.x);
-    let steer_right = if cross.0 > 0 {
-        true
-    } else if cross.0 < 0 {
-        false
-    } else {
-        c.x <= WIDTH.divi(2)
-    };
-    // Tangent to the heading on the chosen side (the right/left-hand normal).
-    let perp = if steer_right {
-        V2::new(dir.y, -dir.x)
-    } else {
-        V2::new(-dir.y, dir.x)
-    };
-    Some(perp.step_toward(speed))
+    #[inline]
+    fn idx(&self, cx: i64, cy: i64) -> usize {
+        (cy * COLS + cx) as usize
+    }
+
+    #[inline]
+    fn tile_of(p: V2) -> (i64, i64) {
+        (
+            p.x.to_int_floor().clamp(0, COLS - 1),
+            p.y.to_int_floor().clamp(0, ROWS - 1),
+        )
+    }
+
+    #[inline]
+    fn tile_center(&self, cx: i64, cy: i64) -> V2 {
+        let half = Fx::from_raw(crate::fixed::ONE / 2);
+        V2::new(Fx::from_int(cx) + half, Fx::from_int(cy) + half)
+    }
+
+    /// A river tile that is not spanned by a bridge (impassable to non-jumpers).
+    #[inline]
+    fn river_blocked(cx: i64, cy: i64) -> bool {
+        let half = Fx::from_raw(crate::fixed::ONE / 2);
+        let center_y = Fx::from_int(cy) + half;
+        if (center_y - RIVER_Y).abs() >= RIVER_HALF {
+            return false;
+        }
+        let center_x = Fx::from_int(cx) + half;
+        let on_bridge = (center_x - BRIDGE_L).abs() <= BRIDGE_HALF
+            || (center_x - BRIDGE_R).abs() <= BRIDGE_HALF;
+        !on_bridge
+    }
+
+    #[inline]
+    fn passable(&self, cx: i64, cy: i64, jumps: bool) -> bool {
+        cx >= 0
+            && cx < COLS
+            && cy >= 0
+            && cy < ROWS
+            && !self.blocked[(cy * COLS + cx) as usize]
+            && (jumps || !Self::river_blocked(cx, cy))
+    }
+
+    /// Clear line of sight: every tile sampled along `a`→`b` is passable.
+    fn los(&self, a: V2, b: V2, jumps: bool) -> bool {
+        let d = b.sub(a);
+        let step = Fx::from_raw(crate::fixed::ONE / 4); // 0.25 tile
+        let len = d.len();
+        let steps = (len.0 / step.0).max(1);
+        let inc = d.step_toward(step);
+        let mut p = a;
+        for _ in 0..steps {
+            let (cx, cy) = Self::tile_of(p);
+            if !self.passable(cx, cy, jumps) {
+                return false;
+            }
+            p = p.add(inc);
+        }
+        let (bx, by) = Self::tile_of(b);
+        self.passable(bx, by, jumps)
+    }
+
+    /// BFS distance field (in tile steps) from target entity `tj`'s footprint to
+    /// every reachable tile, 8-connected, without cutting blocked corners.
+    fn field(&self, snap: &Snap, tj: usize, jumps: bool) -> Vec<u16> {
+        let mut dist = vec![u16::MAX; (COLS * ROWS) as usize];
+        let mut q = std::collections::VecDeque::new();
+        let (ex, ey) = if snap.hx[tj].0 > 0 || snap.hy[tj].0 > 0 {
+            (snap.hx[tj], snap.hy[tj])
+        } else {
+            (snap.rad[tj], snap.rad[tj])
+        };
+        let (lo_x, hi_x, lo_y, hi_y) = footprint(snap.x[tj], snap.y[tj], ex, ey);
+        // Seed every footprint tile at distance 0 (even if blocked — a tower's
+        // own tiles are the source; BFS flows out to the passable neighbours).
+        for ty in lo_y..=hi_y {
+            for tx in lo_x..=hi_x {
+                if tx >= 0 && tx < COLS && ty >= 0 && ty < ROWS {
+                    let i = (ty * COLS + tx) as usize;
+                    if dist[i] != 0 {
+                        dist[i] = 0;
+                        q.push_back((tx, ty));
+                    }
+                }
+            }
+        }
+        while let Some((cx, cy)) = q.pop_front() {
+            let dcur = dist[(cy * COLS + cx) as usize];
+            for &(dx, dy) in &NEIGHBORS {
+                let nx = cx + dx;
+                let ny = cy + dy;
+                if !self.passable(nx, ny, jumps) {
+                    continue;
+                }
+                if dx != 0
+                    && dy != 0
+                    && (!self.passable(cx + dx, cy, jumps) || !self.passable(cx, cy + dy, jumps))
+                {
+                    continue; // no diagonal slip through a blocked corner
+                }
+                let ni = (ny * COLS + nx) as usize;
+                if dist[ni] == u16::MAX {
+                    dist[ni] = dcur.saturating_add(1);
+                    q.push_back((nx, ny));
+                }
+            }
+        }
+        dist
+    }
+
+    /// Passable, corner-safe neighbour of `(cx,cy)` with the lowest field value
+    /// (ties broken by the fixed NEIGHBORS order for determinism).
+    fn best_neighbor(&self, dist: &[u16], cx: i64, cy: i64, jumps: bool) -> Option<(i64, i64)> {
+        let mut best: Option<((i64, i64), u16)> = None;
+        for &(dx, dy) in &NEIGHBORS {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            if !self.passable(nx, ny, jumps) {
+                continue;
+            }
+            if dx != 0
+                && dy != 0
+                && (!self.passable(cx + dx, cy, jumps) || !self.passable(cx, cy + dy, jumps))
+            {
+                continue;
+            }
+            let dv = dist[(ny * COLS + nx) as usize];
+            if dv == u16::MAX {
+                continue;
+            }
+            if best.map_or(true, |(_, bv)| dv < bv) {
+                best = Some(((nx, ny), dv));
+            }
+        }
+        best.map(|(c, _)| c)
+    }
+}
+
+/// [path] Cross-tick flow-field memo. A field is a *pure function* of (blocked
+/// tiles, target footprint, river-jump flag), so caching it cannot change the
+/// simulation — only its speed. Invalidated wholesale whenever the blocked-tile
+/// set changes (a building is built or destroyed), and per target whenever that
+/// target moves to a new tile. Never part of replay state.
+#[derive(Default)]
+struct PathCache {
+    prev_blocked: Vec<bool>,
+    map: std::collections::HashMap<(u32, bool), (usize, Vec<u16>)>,
+}
+
+impl PathCache {
+    /// Drop cached fields when the obstacle layout changed; bound memory growth
+    /// (moving troop targets would otherwise accumulate stale fields).
+    fn sync(&mut self, grid: &PathGrid) {
+        if self.prev_blocked != grid.blocked {
+            self.map.clear();
+            self.prev_blocked = grid.blocked.clone();
+        }
+        if self.map.len() > 512 {
+            self.map.clear();
+        }
+    }
+
+    /// The flow field toward target `tj` (building it on a miss). Keyed by the
+    /// target's id + jump flag; a cached field is reused only while the target
+    /// still sits in the tile it was built from.
+    fn field_for(&mut self, grid: &PathGrid, snap: &Snap, tj: usize, jumps: bool) -> &Vec<u16> {
+        let id = snap.id[tj];
+        let (cx, cy) = PathGrid::tile_of(V2::new(snap.x[tj], snap.y[tj]));
+        let ttile = (cy * COLS + cx) as usize;
+        let key = (id, jumps);
+        let fresh = self.map.get(&key).map_or(false, |(bt, _)| *bt == ttile);
+        if !fresh {
+            let f = grid.field(snap, tj, jumps);
+            self.map.insert(key, (ttile, f));
+        }
+        &self.map.get(&key).unwrap().1
+    }
 }
 
 /// Per-tick immutable snapshot used for target queries and splash scans.
@@ -2747,6 +2957,46 @@ mod path_tests {
         assert!(
             final_y > 12.0,
             "knight failed to pass the building (final_y={final_y})"
+        );
+    }
+
+    /// End-to-end pathfinding guard: tanks pushed up each lane must ROUTE across
+    /// the river (bridges) and reach the enemy towers — chipping them — and the
+    /// whole engagement must replay bit-identically. If the flow field stranded
+    /// units at the river bank or against their own towers, no enemy tower would
+    /// ever take damage and this fails.
+    #[test]
+    fn cross_river_push_is_deterministic_and_progresses() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            eng.reset(42, None);
+            let giant = eng.lib.id_of("giant").unwrap();
+            let knight = eng.lib.id_of("knight").unwrap();
+            // a tank + support up each lane, both sides (clear of their own towers)
+            eng.spawn_unit(0, giant, at(3.5, 9.0));
+            eng.spawn_unit(0, knight, at(14.5, 9.0));
+            eng.spawn_unit(1, giant, at(14.5, 23.0));
+            eng.spawn_unit(1, knight, at(3.5, 23.0));
+            let init_tower_hp: i32 =
+                eng.entities.iter().filter(|e| e.is_tower).map(|e| e.hp).sum();
+            for _ in 0..1600 {
+                eng.step([Action::noop(), Action::noop()]);
+            }
+            let final_tower_hp: i32 =
+                eng.entities.iter().filter(|e| e.is_tower).map(|e| e.hp).sum();
+            let snapshot: Vec<(i64, i64)> =
+                eng.entities.iter().map(|e| (e.pos.x.0, e.pos.y.0)).collect();
+            (init_tower_hp, final_tower_hp, snapshot)
+        };
+        let (init1, final1, snap1) = run();
+        let (init2, final2, snap2) = run();
+        assert_eq!(init1, init2);
+        assert_eq!(final1, final2, "engagement diverged (tower hp)");
+        assert_eq!(snap1, snap2, "engagement diverged (positions)");
+        assert!(
+            final1 < init1,
+            "pushers never damaged a tower — units stranded by pathfinding \
+             (init={init1}, final={final1})"
         );
     }
 

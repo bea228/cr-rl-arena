@@ -152,12 +152,22 @@ The spell system is **instant area damage + optional stun only**
 
 ## 5. Movement & pathfinding
 
-- `[SIMPLIFIED]` **H — No real pathfinding.** Units "aim at the nearest bridge
-  mouth, then the target," with river-blocking plus collision push. They do **not
-  route around** placed buildings (Cannon, Tombstone) — they shove against them.
-- `[SIMPLIFIED]` **M — Bank-hugging / corner-clipping** near the river differs
-  from CR's deterministic tile pathing; the river block simply freezes vertical
-  movement off-bridge (`engine.rs::block_river`).
+- `[RESOLVED 2026-11-12]` **True tile pathfinding.** Ground units now route on
+  the 18×32 tile grid via a BFS **flow field** computed from each target's
+  footprint over a passability grid (river impassable except on the bridges;
+  towers and buildings are solid tiles). A unit heads straight at its target when
+  it has clear line of sight, and otherwise descends the flow field — string-
+  pulled to the farthest visible tile on the route — so it genuinely **routes
+  around** placed buildings (Cannon, Tombstone, etc.) and to the correct bridge
+  instead of shoving against obstacles. Fields are a pure function of (blocked
+  tiles, target footprint, jump flag) and are memoised across ticks (invalidated
+  when the obstacle layout changes or the target changes tile), so determinism is
+  unchanged and the hot path stays fast. Replaces the old "aim at the nearest
+  bridge mouth" heuristic and the reactive local-avoidance pass.
+  (`engine.rs`: `PathGrid`, `PathCache`, `path_goal`.)
+- `[SIMPLIFIED]` **L — Bank-hugging / corner-clipping** near the river still
+  differs slightly from CR's exact sub-tile pathing (the grid resolves to whole
+  tiles; `block_river` + collisions keep motion legal at the sub-tile level).
 - `[SIMPLIFIED]` **L — Instant turning** (no facing/turn delay).
 
 ## 6. Collision & physics
@@ -285,7 +295,8 @@ The spell system is **instant area damage + optional stun only**
 3. **Status-effect & spell framework:** slow / freeze / stun / rage / DoT /
    knockback / pull, so most spells and control cards become expressible (§4).
 4. **Death-spawns & spawner buildings** (§3) — unlocks a large slice of the roster.
-5. **Mass-weighted push** (§6) and **building-aware pathfinding** (§5).
+5. **Mass-weighted push** (§6) — done 2026-11-11. ~~building-aware pathfinding (§5)~~
+   **Done 2026-11-12**: replaced with a true tile flow-field pathfinder.
 6. ~~**Verify stats** against authoritative tables (§12).~~ **Done 2026-11-12** —
    all card/tower stats reconciled against the decoded `csv_logic` tables.
 
