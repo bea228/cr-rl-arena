@@ -154,4 +154,22 @@ items open. This round closes them. Same discipline as before.
 ---
 
 ## Audit log (filled by the supervising session)
-- (pending)
+Every item independently verified before merge to `main` (pushed). No faked checkmarks.
+- **R1** — ran the suite on the branch (51/51); inspected the `mother_witch`/`voodoo_hog`
+  cards, the `curse_add`/`curse_src` projectile wiring, and the side-flip test (pig spawns
+  for the Mother Witch's owner). Genuine; good reuse of the Goblin Curse state.
+- **R2** — verified both parts (`goblinstein` champion body + summon-only
+  `goblinstein_doctor`), the `deploy_spawn` pairing, the one-champion-per-deck test, and the
+  Doctor's `on_hit_freeze` zap. The `[~]` tether/revive deferral is reasonable (no AbilityKind
+  analog); card safely carries no `ability` block.
+- **R3** — INDEPENDENTLY CONFIRMED the deferral: the `Cooldown = 20000` the worker could have
+  mis-grabbed is in `megamonk.toml` (out-of-scope Super variant), NOT `monk.toml`; the real
+  `[ABILITY.*]` blocks for Mighty Miner/Monk/Little Prince carry only
+  `Cooldown = "ability_cooldown"` (named stat-ref, no number), and `character_abilities.csv`'s
+  Cooldown column is empty for them. Only Boss Bandit has a real inline `3000` (already used).
+  The data genuinely lacks these cooldowns — correct deferral.
+- **R4** — Cargo.toml cleanly back to pyo3 0.22 (no half-migration). Deferral is well-reasoned
+  (can't runtime-validate a 2-major binding jump here; can't confirm the advisory — same
+  skepticism as the zmij false-positive). One-line fix is documented for later.
+- **Full suite** on merged `main`: 56 Rust tests pass. End-to-end: 132 cards / 116 deployable,
+  Mother Witch + Goblinstein deploy/simulate, determinism holds. Shared venv refreshed.
