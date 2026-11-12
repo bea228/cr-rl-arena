@@ -74,6 +74,11 @@ pub struct Projectile {
     pub hits_flying: bool,
     pub hits_ground: bool,
     pub dead: bool,
+    // [curse] Mother Witch VoodooProjectile: on hit, curse the victim for `curse_ticks`
+    // and remember which unit (`curse_spawn` def id) it becomes for the attacker on its
+    // later death. Only meaningful when curse_ticks > 0 (default 0 = no curse).
+    pub curse_ticks: i32,
+    pub curse_spawn: i32,
     // [proj] --- projectile-behavior extensions ---
     pub homing: bool,        // [proj] true: track the target entity each tick; false: fly to fixed `aim` (dodgeable)
     pub slow_ticks: i32,     // [proj] on-hit slow applied to victims (Ice Wizard)

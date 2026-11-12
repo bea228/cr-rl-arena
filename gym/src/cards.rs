@@ -192,9 +192,15 @@ pub struct CardDef {
     pub deploy_spawn_count: i32,
     pub deploy_spawn_name: Option<String>,
     pub deploy_spawn_id: Option<usize>,
-    // [curse] Goblin Curse: the unit a cursed enemy becomes (for the caster) when it dies.
+    // [curse] Goblin Curse / Mother Witch: the unit a cursed enemy becomes (for the
+    // caster/attacker) when it dies.
     pub curse_spawn_name: Option<String>,
     pub curse_spawn_id: Option<usize>,
+    // [curse] Mother Witch VoodooCurse: this unit's ATTACK curses the victim for this
+    // many ticks (0 = no on-hit curse). On the cursed victim's later death it spawns
+    // one `curse_spawn` unit for this unit's owner (DeathSpawnIsEnemy). 0 for all
+    // other cards -> only the curse-on-hit carrier (Mother Witch) applies it.
+    pub curse_ticks: i32,
     // [rev] revive-on-death: when this unit dies from lifetime expiry, hatch one
     // `revive_name`/`revive_as` at `revive_hp_pct`% of that card's hp, exactly once
     // (used by the Phoenix egg -> reborn Phoenix). Linked name->id in the post-load pass.
@@ -394,7 +400,8 @@ struct RawCard {
     spawn: Option<RawSpawn>,
     death_spawn: Option<RawDeath>,
     deploy_spawn: Option<RawSpawn>, // [mix] secondary units spawned on deploy (reuses card/count)
-    curse_spawn: Option<String>,    // [curse] unit a cursed enemy becomes on death (Goblin Curse)
+    curse_spawn: Option<String>,    // [curse] unit a cursed enemy becomes on death (Goblin Curse / Mother Witch)
+    curse_on_hit: Option<f64>,      // [curse] Mother Witch: seconds of curse applied by this unit's attack
     revive: Option<RawRevive>, // [rev]
     death_damage: Option<i64>,  // [edep]
     death_radius: Option<f64>,  // [edep]
@@ -592,6 +599,8 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         // [curse] curse transform target (linked name->id in the post-load pass)
         curse_spawn_name: r.curse_spawn.clone(),
         curse_spawn_id: None,
+        // [curse] Mother Witch on-hit curse duration (seconds -> ticks)
+        curse_ticks: r.curse_on_hit.map(secs_to_ticks).unwrap_or(0),
         // [rev] revive spec (resolved to id in the post-load linking pass below)
         revive_name: r.revive.as_ref().map(|s| s.card.clone()),
         revive_as: None,
