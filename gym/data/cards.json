@@ -1871,7 +1871,15 @@
     174,
     691
    ],
-   "ramp_stage_time": 1.0
+   "ramp_stage_time": 1.0,
+   "ability": {
+    "kind": "lanebomb",
+    "cost": 1,
+    "cooldown": 3.5,
+    "damage": 333,
+    "radius": 3.0,
+    "knockback": 1.8
+   }
   },
   "monk": {
    "elixir": 5,
@@ -1887,7 +1895,14 @@
    "sight": 5.5,
    "deploy_time": 1.0,
    "targets": "ground",
-   "champion": true
+   "champion": true,
+   "ability": {
+    "kind": "deflect",
+    "cost": 1,
+    "cooldown": 12.0,
+    "duration": 4.0,
+    "reduction": 65
+   }
   },
   "little_prince": {
    "elixir": 3,
@@ -1904,7 +1919,15 @@
    "deploy_time": 1.0,
    "targets": "both",
    "champion": true,
-   "projectile_speed": 6.0
+   "projectile_speed": 6.0,
+   "ability": {
+    "kind": "summon",
+    "cost": 3,
+    "cooldown": 20.0,
+    "count": 1,
+    "summon": "guardian",
+    "radius": 1.0
+   }
   },
   "boss_bandit": {
    "elixir": 6,
@@ -1927,7 +1950,30 @@
     "speed": 10.0,
     "damage_mult": 2,
     "invuln": true
+   },
+   "ability": {
+    "kind": "warp",
+    "cost": 1,
+    "cooldown": 3.0,
+    "duration": 1.0,
+    "range": 6.0
    }
+  },
+  "guardian": {
+   "elixir": 0,
+   "type": "troop",
+   "deployable": false,
+   "hp": 1600,
+   "damage": 233,
+   "hit_speed": 1.2,
+   "load_time": 0.7,
+   "range": 1.2,
+   "speed": 1.0,
+   "collision_radius": 0.8,
+   "mass": 1.0,
+   "sight": 5.5,
+   "targets": "ground",
+   "deploy_time": 0.3
   },
   "bomb_tower": {
    "elixir": 4,

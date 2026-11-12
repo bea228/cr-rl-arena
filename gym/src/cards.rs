@@ -50,15 +50,23 @@ impl SpellEffect {
 }
 
 /// [champ] A champion's activatable ability, reusing existing engine systems.
-///   Cloak  — self becomes untargetable + gains a rage (attack/move) boost.
-///   Summon — spawns N of a unit (e.g. skeletons) around the champion.
-///   Dash   — teleports toward the nearest enemy, damaging a line of enemies.
+///   Cloak    — self becomes untargetable + gains a rage (attack/move) boost.
+///   Summon   — spawns N of a unit (e.g. skeletons/guardian) around the champion.
+///   Dash     — teleports toward the nearest enemy, damaging a line of enemies.
+///   LaneBomb — Mighty Miner: switch to the mirror lane and drop an area
+///              bomb (damage + knockback) at the vacated spot.
+///   Deflect  — Monk: a timed self damage-reduction window (projectile deflect).
+///   Warp     — Boss Bandit: warp a fixed distance toward the enemy side and
+///              turn briefly untargetable/invisible.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AbilityKind {
     None,
     Cloak,
     Summon,
     Dash,
+    LaneBomb,
+    Deflect,
+    Warp,
 }
 
 impl AbilityKind {
@@ -67,6 +75,9 @@ impl AbilityKind {
             "cloak" => AbilityKind::Cloak,
             "summon" => AbilityKind::Summon,
             "dash" => AbilityKind::Dash,
+            "lanebomb" => AbilityKind::LaneBomb,
+            "deflect" => AbilityKind::Deflect,
+            "warp" => AbilityKind::Warp,
             _ => AbilityKind::None,
         }
     }
@@ -226,8 +237,10 @@ pub struct CardDef {
     pub ability_duration_ticks: i32, // Cloak: untargetable/boost duration
     pub ability_damage: i32,         // Dash: damage per enemy in the line
     pub ability_count: i32,          // Summon: number of units spawned
-    pub ability_radius: Fx,          // Dash: line hit radius / Summon: spread
-    pub ability_range: Fx,           // Dash: max dash reach (tiles)
+    pub ability_radius: Fx,          // Dash: line hit radius / Summon: spread / LaneBomb: blast radius
+    pub ability_range: Fx,           // Dash: max dash reach / Warp: warp distance (tiles)
+    pub ability_knockback: Fx,       // LaneBomb: push distance applied to enemies in the blast
+    pub ability_reduction: i32,      // Deflect: % incoming-damage reduction while active (0-100)
     pub ability_spawn_name: Option<String>, // Summon: unit to spawn
     pub ability_spawn_id: Option<usize>,
     // [M2] explicit homing override; None = engine default (splash => commit-to-ground).
@@ -295,8 +308,10 @@ struct RawAbility {
     damage: Option<i64>,   // Dash
     count: Option<i64>,    // Summon
     summon: Option<String>,// Summon unit name
-    range: Option<f64>,    // Dash reach (tiles)
-    radius: Option<f64>,   // Dash line radius / Summon spread (tiles)
+    range: Option<f64>,    // Dash reach / Warp distance (tiles)
+    radius: Option<f64>,   // Dash line radius / Summon spread / LaneBomb blast radius (tiles)
+    knockback: Option<f64>,// LaneBomb pushback distance (tiles)
+    reduction: Option<i64>,// Deflect % damage reduction (0-100)
 }
 
 #[derive(Deserialize, Default)]
@@ -447,6 +462,9 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
             ),
             None => (AbilityKind::None, 0, 0, 0, 0, 1, Fx::from_f64(1.0), Fx(0), None),
         };
+    // [champ] extra ability params (LaneBomb knockback, Deflect reduction); 0 by default
+    let ab_knockback = Fx::from_f64(r.ability.as_ref().and_then(|a| a.knockback).unwrap_or(0.0));
+    let ab_reduction = r.ability.as_ref().and_then(|a| a.reduction).unwrap_or(0).clamp(0, 100) as i32;
     CardDef {
         name: name.to_string(),
         ctype,
@@ -574,6 +592,8 @@ fn resolve(name: &str, r: &RawCard, forced: Option<CardType>) -> CardDef {
         ability_count: ab_count,
         ability_radius: ab_radius,
         ability_range: ab_range,
+        ability_knockback: ab_knockback,
+        ability_reduction: ab_reduction,
         ability_spawn_name: ab_spawn,
         ability_spawn_id: None,
         homing: r.homing, // [M2]

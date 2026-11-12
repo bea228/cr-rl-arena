@@ -29,7 +29,7 @@ not implemented.
 
 ## A. Actionable
 
-- [ ] **A1 — New champions' activated abilities.** Mighty Miner, Monk, Little Prince,
+- [x] **A1 — New champions' activated abilities.** Mighty Miner, Monk, Little Prince,
   Boss Bandit are deck-legal with real combat but no activated ability (`ability` = None).
   Model each ability faithfully using the decoded ability data (cost/cooldown/duration/
   damage from the character TOMLs + `ManaCostFromSummonerMana` in `spells_characters.csv`).
@@ -39,6 +39,19 @@ not implemented.
   Guardian, Mighty Miner's bomb-dash), or approximate to the nearest kind and document it.
   Acceptance: each of the 4 champions has a working `ability{...}` that fires via
   `Battle.activate_ability`, with a test per champion asserting the effect.
+  DONE: added 3 new `AbilityKind`s (`LaneBomb`, `Deflect`, `Warp`) + reused `Summon`.
+  Mighty Miner `lanebomb` = switch to mirror lane (reflect x) + drop a 333-dmg (L11 of
+  MightyMinerExplosion BaseDamage 130) / 3.0-tile-radius / 1.8-knockback blast at the old
+  spot; Monk `deflect` = 4.0s (AbilityStateDuration 4000) 65%-damage-reduction window
+  (ShieldBoostMonk DamageReduction=65), applied in `apply_damage`; Little Prince `summon` =
+  1 `guardian` (ChampionGuard 1600hp/233dmg, added as new `deployable:false` card); Boss
+  Bandit `warp` = 6-tile (WarpY 6000) forward warp + 1.0s (SpawnTime 1000) cloak + target
+  reset. Costs (ManaCost) exact: MM/Monk/BB=1, LP=3. Cooldowns: Boss Bandit 3.0s exact
+  (Cooldown=3000); MM 3.5s / Monk 12.0s / LP 20.0s are documented APPROXIMATIONS — the
+  decoded tables store only the leveled stat-tag `ability_cooldown`, not its numeric. Tests:
+  `mighty_miner_lanebomb_damages_and_switches_lane`, `monk_deflect_reduces_incoming_damage`,
+  `little_prince_summons_guardian`, `boss_bandit_warps_forward_and_cloaks`,
+  `champion_abilities_are_deterministic`. `cargo test --release`: 29/29 pass. Commit: a8bfadb
 - [ ] **A2 — Hunter shotgun burst + Firecracker recoil.** Hunter currently fires one
   weak projectile (per-pellet damage); real Hunter deals many pellets (big point-blank
   burst, falls off with range). Model its effective multi-pellet damage from the data

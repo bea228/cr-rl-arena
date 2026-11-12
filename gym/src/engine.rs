@@ -236,6 +236,7 @@ impl Engine {
             reflect_cd: 0, // [rfl]
             ability_cd: 0, // [champ]
             cloak: 0,      // [champ]
+            deflect: 0,    // [champ]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -283,6 +284,7 @@ impl Engine {
             reflect_cd: 0, // [rfl]
             ability_cd: 0, // [champ] ready on deploy
             cloak: 0,      // [champ]
+            deflect: 0,    // [champ]
             charge_dist: Fx(0),
             dash: 0,    // [charge]
             dash_cd: 0, // [charge]
@@ -569,6 +571,7 @@ impl Engine {
         let acount = self.lib.defs[def].ability_count.max(1);
         let aradius = self.lib.defs[def].ability_radius;
         let arange = self.lib.defs[def].ability_range;
+        let aknock = self.lib.defs[def].ability_knockback;
         let aspawn = self.lib.defs[def].ability_spawn_id;
         if self.elixir[player] < cost {
             return false;
@@ -651,6 +654,79 @@ impl Engine {
                     }
                 }
                 self.entities[i].pos = endp;
+                true
+            }
+            AbilityKind::LaneBomb => {
+                // [champ] Mighty Miner: drop an area bomb (damage + knockback) at the
+                // current spot, then dig across to the mirror lane (same row). The
+                // bomb hits every enemy within the blast radius, air and ground.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                let center = cpos;
+                let r2 = aradius.mul(aradius);
+                for j in 0..self.entities.len() {
+                    if j == i {
+                        continue;
+                    }
+                    let (dead, j_owner, alive, deploy, jpos, is_king) = {
+                        let e = &self.entities[j];
+                        (e.dead, e.owner, e.alive(), e.deploy, e.pos, e.is_king)
+                    };
+                    if dead || j_owner == owner || !alive || deploy > 0 {
+                        continue;
+                    }
+                    let off = jpos.sub(center);
+                    if off.len_sq() > r2 {
+                        continue;
+                    }
+                    // area damage (shield soaks first), as with any blast
+                    let mut rem = admg;
+                    if self.entities[j].shield_hp > 0 {
+                        let ab = rem.min(self.entities[j].shield_hp);
+                        self.entities[j].shield_hp -= ab;
+                        rem -= ab;
+                    }
+                    if rem > 0 {
+                        self.entities[j].hp -= rem;
+                    }
+                    if is_king {
+                        self.entities[j].activated = true;
+                    }
+                    // knockback: shove the victim directly away from the blast center
+                    if aknock.0 > 0 {
+                        let dir = off.step_toward(aknock);
+                        let jdef = self.entities[j].def;
+                        let np = Self::clamp_pos(V2::new(jpos.x + dir.x, jpos.y + dir.y));
+                        let np = block_river(jpos, np, &self.lib.defs[jdef]);
+                        self.entities[j].pos = np;
+                    }
+                }
+                // dig to the mirror lane: reflect x across the arena centre, keep row.
+                let newp = Self::clamp_pos(V2::new(WIDTH - cpos.x, cpos.y));
+                self.entities[i].pos = newp;
+                true
+            }
+            AbilityKind::Deflect => {
+                // [champ] Monk: open a timed damage-reduction window on himself. While
+                // active, apply_damage scales incoming hits by ability_reduction%.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                self.entities[i].deflect = self.entities[i].deflect.max(dur);
+                true
+            }
+            AbilityKind::Warp => {
+                // [champ] Boss Bandit: warp a fixed distance toward the enemy side and
+                // turn briefly untargetable/invisible, dropping the current target.
+                self.elixir[player] = self.elixir[player] - cost;
+                self.entities[i].ability_cd = cd;
+                // forward is toward the opponent's half (p0 -> +y, p1 -> -y)
+                let fwd = if owner == 0 { arange } else { Fx(0) - arange };
+                let jdef = def;
+                let np = Self::clamp_pos(V2::new(cpos.x, cpos.y + fwd));
+                let np = block_river(cpos, np, &self.lib.defs[jdef]);
+                self.entities[i].pos = np;
+                self.entities[i].cloak = self.entities[i].cloak.max(dur);
+                self.entities[i].target = None;
                 true
             }
         }
@@ -1031,6 +1107,9 @@ impl Engine {
             }
             if e.cloak > 0 {
                 e.cloak -= 1; // [champ]
+            }
+            if e.deflect > 0 {
+                e.deflect -= 1; // [champ] Monk Deflect window
             }
             if e.reveal > 0 {
                 e.reveal -= 1; // [inv] fade back to invisible when the window elapses
@@ -1957,8 +2036,15 @@ impl Engine {
                 self.entities[i].slow = self.entities[i].slow.max(slow_add[i]);
             }
             if dmg[i] > 0 && !self.entities[i].dead {
-                // shield absorbs first
                 let mut rem = dmg[i];
+                // [champ] Monk Deflect: incoming damage reduced while the window is active
+                if self.entities[i].deflect > 0 {
+                    let red = self.lib.defs[self.entities[i].def].ability_reduction;
+                    if red > 0 {
+                        rem = ((rem as i64) * (100 - red as i64) / 100) as i32;
+                    }
+                }
+                // shield absorbs next
                 if self.entities[i].shield_hp > 0 {
                     let absorbed = rem.min(self.entities[i].shield_hp);
                     self.entities[i].shield_hp -= absorbed;
@@ -3414,5 +3500,154 @@ mod medium_gap_tests {
             trail
         };
         assert_eq!(run(), run(), "spell-delay + formation paths must replay identically");
+    }
+}
+
+// [champ] A1: the four new champions' activated abilities. Each test deploys the
+// champion, makes it active + funds the elixir, fires Battle.activate_ability, and
+// asserts the real on-field effect (not just the return flag).
+#[cfg(test)]
+mod champ_ability_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    fn at(x: f64, y: f64) -> V2 {
+        V2::new(Fx::from_f64(x), Fx::from_f64(y))
+    }
+    fn activate_ready(eng: &mut Engine, owner: usize, id: u32) {
+        // make the champion active and give the player plenty of elixir
+        for e in eng.entities.iter_mut() {
+            if e.id == id {
+                e.deploy = 0;
+            }
+        }
+        eng.elixir[owner] = Fx::from_int(10);
+    }
+    fn count_def(eng: &Engine, name: &str) -> usize {
+        let did = eng.lib.id_of(name).unwrap();
+        eng.entities.iter().filter(|e| e.def == did && !e.dead).count()
+    }
+
+    // Mighty Miner: LaneBomb drops an area blast (damage + knockback) at the vacated
+    // spot and digs the champion to the mirror lane (reflect x, same row).
+    #[test]
+    fn mighty_miner_lanebomb_damages_and_switches_lane() {
+        let mut eng = Engine::new(Library::default_lib());
+        let mm = eng.lib.id_of("mighty_miner").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, mm, at(4.5, 9.0)); // left lane (x < 9)
+        let mm_id = eng.entities.last().unwrap().id;
+        eng.spawn_unit(1, knight, at(4.5, 11.0)); // 2.0 away, inside the 3.0 blast
+        let k_id = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        activate_ready(&mut eng, 0, mm_id);
+        let k_hp0 = eng.entities.iter().find(|e| e.id == k_id).unwrap().hp;
+        let k_pos0 = eng.entities.iter().find(|e| e.id == k_id).unwrap().pos;
+
+        assert!(eng.activate_ability(0), "Mighty Miner ability should fire");
+
+        let k = eng.entities.iter().find(|e| e.id == k_id).unwrap();
+        assert_eq!(k_hp0 - k.hp, 333, "bomb deals its 333 (L11) area damage");
+        assert!(k.pos.sub(k_pos0).len().to_f64() > 0.0, "enemy is knocked back");
+        // the champion digs to the mirror lane: x -> WIDTH - x (18 - 4.5 = 13.5)
+        let m = eng.entities.iter().find(|e| e.id == mm_id).unwrap();
+        assert!((m.pos.x.to_f64() - 13.5).abs() < 1e-6, "mighty miner switched lanes");
+        assert!(lane_of(m.pos.x) == 1, "now in the right lane");
+    }
+
+    // Monk: Deflect opens a timed damage-reduction window; incoming damage while it
+    // is active is scaled by (100 - reduction)%.
+    #[test]
+    fn monk_deflect_reduces_incoming_damage() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monk = eng.lib.id_of("monk").unwrap();
+        eng.spawn_unit(0, monk, at(9.0, 8.0));
+        let m_id = eng.entities.last().unwrap().id;
+        activate_ready(&mut eng, 0, m_id);
+
+        assert!(eng.activate_ability(0), "Monk ability should fire");
+        let mi = eng.entities.iter().position(|e| e.id == m_id).unwrap();
+        assert!(eng.entities[mi].deflect > 0, "deflect window is open");
+
+        let hp0 = eng.entities[mi].hp;
+        let n = eng.entities.len();
+        let mut dmg = vec![0i32; n];
+        dmg[mi] = 1000;
+        let zero = vec![0i32; n];
+        eng.apply_damage(&dmg, &zero, &zero);
+        // 65% reduction -> 1000 * 35% = 350 taken
+        assert_eq!(hp0 - eng.entities[mi].hp, 350, "Deflect cuts 65% of the hit");
+    }
+
+    // Little Prince: the Guardian summon spawns one ChampionGuard ally.
+    #[test]
+    fn little_prince_summons_guardian() {
+        let mut eng = Engine::new(Library::default_lib());
+        let lp = eng.lib.id_of("little_prince").unwrap();
+        eng.spawn_unit(0, lp, at(9.0, 8.0));
+        let lp_id = eng.entities.last().unwrap().id;
+        activate_ready(&mut eng, 0, lp_id);
+        assert_eq!(count_def(&eng, "guardian"), 0, "no guardian before the ability");
+
+        assert!(eng.activate_ability(0), "Little Prince ability should fire");
+        assert_eq!(count_def(&eng, "guardian"), 1, "exactly one guardian is summoned");
+        // the guardian belongs to the Little Prince's owner
+        let gid = eng.lib.id_of("guardian").unwrap();
+        let g = eng.entities.iter().find(|e| e.def == gid).unwrap();
+        assert_eq!(g.owner, 0, "guardian is an ally");
+    }
+
+    // Boss Bandit: Warp jumps a fixed 6 tiles toward the enemy side, turns briefly
+    // untargetable (invisible), and resets the current target.
+    #[test]
+    fn boss_bandit_warps_forward_and_cloaks() {
+        let mut eng = Engine::new(Library::default_lib());
+        let bb = eng.lib.id_of("boss_bandit").unwrap();
+        eng.spawn_unit(0, bb, at(9.0, 8.0)); // owner 0 -> forward is +y
+        let bb_id = eng.entities.last().unwrap().id;
+        // pretend it had locked a target before warping
+        for e in eng.entities.iter_mut() {
+            if e.id == bb_id {
+                e.target = Some(999);
+            }
+        }
+        activate_ready(&mut eng, 0, bb_id);
+
+        assert!(eng.activate_ability(0), "Boss Bandit ability should fire");
+        let b = eng.entities.iter().find(|e| e.id == bb_id).unwrap();
+        assert!((b.pos.y.to_f64() - 14.0).abs() < 1e-6, "warped ~6 tiles forward (8 -> 14)");
+        assert!(b.cloak > 0, "boss bandit is briefly untargetable/invisible");
+        assert_eq!(b.target, None, "warp resets the target");
+    }
+
+    // Ability activations stay deterministic across identical runs.
+    #[test]
+    fn champion_abilities_are_deterministic() {
+        let run = || {
+            let mut eng = Engine::new(Library::default_lib());
+            let mm = eng.lib.id_of("mighty_miner").unwrap();
+            let knight = eng.lib.id_of("knight").unwrap();
+            eng.spawn_unit(0, mm, at(4.5, 9.0));
+            let mm_id = eng.entities.last().unwrap().id;
+            eng.spawn_unit(1, knight, at(4.5, 11.0));
+            for e in eng.entities.iter_mut() {
+                e.deploy = 0;
+            }
+            eng.elixir[0] = Fx::from_int(10);
+            eng.activate_ability(0);
+            let mut trail = Vec::new();
+            for _ in 0..20 {
+                eng.step([Action::noop(), Action::noop()]);
+                for e in &eng.entities {
+                    trail.push((e.id, e.pos.x.0, e.pos.y.0, e.hp, e.cloak, e.deflect));
+                }
+            }
+            let _ = mm_id;
+            trail
+        };
+        assert_eq!(run(), run(), "champion ability paths must replay identically");
     }
 }
