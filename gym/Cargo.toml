@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module"] }
+# Worker threads for BatchBattle.step (n battles stepped in parallel, GIL released).
+rayon = "1.10"
 # NOTE: an earlier session flagged serde_json >=1.0.147 (new dep `zmij`) and serde_derive
 # 1.0.229 (new dep `syn 3.x`) as a "supply-chain typosquat" and pinned below them. That was a
 # FALSE POSITIVE: `zmij` is dtolnay's legitimate Schubfach float formatter (the `ryu`

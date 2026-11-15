@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from ._core import (  # noqa: F401
     Battle,
+    BatchBattle,
     PlayerView,
     BuildCheck,
     WIDTH,
@@ -47,6 +48,7 @@ from ._core import (  # noqa: F401
 
 __all__ = [
     "Battle",
+    "BatchBattle",
     "PlayerView",
     "WIDTH",
     "HEIGHT",

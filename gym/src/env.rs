@@ -8,6 +8,12 @@
 //!
 //! Observations are returned as plain Python tuples/lists/dicts so there are no
 //! third-party deps; the optional numpy/gym adapters live in Python.
+//!
+//! Throughput primitives (pure speed -- they decide nothing about rewards,
+//! observations or action encodings):
+//!   bb   = BatchBattle(n, threads=None)    # n independent battles, stepped in parallel
+//!   outs = bb.step(actions0, actions1)     # one tick each, all cores, GIL released
+//!   bb[i]                                  # an ordinary `Battle` (every accessor works)
 
 use crate::arena::{HEIGHT, OVERTIME_TICKS, REGULATION_TICKS, TICKS_PER_SECOND, WIDTH};
 use crate::cards::Library;
@@ -15,6 +21,7 @@ use crate::engine::{Action, Engine, Outcome};
 use crate::fixed::{Fx, V2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use rayon::prelude::*;
 
 #[pyclass]
 pub struct Battle {
@@ -273,6 +280,191 @@ impl Battle {
             ));
         }
         Ok(out)
+    }
+}
+
+type BatchActions = Option<Vec<Option<(i32, f64, f64)>>>;
+
+/// `n` independent battles stepped together in one native call, across threads,
+/// with the GIL released.
+///
+/// This is purely a throughput tool. Each element is an ordinary [`Battle`]
+/// (`bb[i]`), so every accessor -- `observe`, `view`, `entities`, `legal`,
+/// `reset`, ... -- works per battle exactly as it does standalone, and a battle
+/// stepped here plays out bit-identically to the same battle stepped alone.
+/// Nothing about rewards, observation encoding or when to reset is decided here.
+///
+///   bb = BatchBattle(256)                    # threads=None: one per CPU core
+///   bb.reset(range(256))                     # one seed per battle
+///   outs = bb.step(acts0, acts1)             # lists of (slot, x, y) | None
+///   for i, o in enumerate(outs):
+///       if o: bb[i].reset(new_seed)          # finished battles are left as-is
+#[pyclass]
+pub struct BatchBattle {
+    battles: Vec<Py<Battle>>,
+    pool: Option<rayon::ThreadPool>, // None => step sequentially on the caller's thread
+    threads: usize,
+}
+
+impl BatchBattle {
+    fn batch_actions(&self, a: BatchActions, which: &str) -> PyResult<Vec<Action>> {
+        match a {
+            None => Ok(vec![Action::noop(); self.battles.len()]),
+            Some(v) => {
+                if v.len() != self.battles.len() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "{which} has {} entries, expected {} (one per battle)",
+                        v.len(),
+                        self.battles.len()
+                    )));
+                }
+                Ok(v.into_iter().map(to_action).collect())
+            }
+        }
+    }
+}
+
+#[pymethods]
+impl BatchBattle {
+    /// `n` battles. `threads`: None/0 = one worker per CPU core, 1 = no worker
+    /// threads (step on the calling thread), N = exactly N workers.
+    #[new]
+    #[pyo3(signature = (n, threads=None, cards_json=None))]
+    fn new(py: Python<'_>, n: usize, threads: Option<usize>, cards_json: Option<String>) -> PyResult<BatchBattle> {
+        if n == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err("n must be >= 1"));
+        }
+        let mut battles = Vec::with_capacity(n);
+        for _ in 0..n {
+            battles.push(Py::new(py, Battle::new(cards_json.clone())?)?);
+        }
+        let want = threads.unwrap_or(0);
+        let pool = if want == 1 {
+            None
+        } else {
+            Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(want) // 0 => rayon picks the CPU count
+                    .build()
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
+            )
+        };
+        let threads = pool.as_ref().map_or(1, |p| p.current_num_threads());
+        Ok(BatchBattle { battles, pool, threads })
+    }
+
+    /// Reset every battle to tick 0. `seeds` has one seed per battle; the decks
+    /// (both or neither, as in `Battle.reset`) are shared by all of them. To reset
+    /// a single battle -- e.g. one that just finished -- call `bb[i].reset(...)`.
+    #[pyo3(signature = (seeds, deck0=None, deck1=None))]
+    fn reset(
+        &self,
+        py: Python<'_>,
+        seeds: Vec<u64>,
+        deck0: Option<Vec<String>>,
+        deck1: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        if seeds.len() != self.battles.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "seeds has {} entries, expected {} (one per battle)",
+                seeds.len(),
+                self.battles.len()
+            )));
+        }
+        for (b, seed) in self.battles.iter().zip(seeds) {
+            b.bind(py).try_borrow_mut()?.reset(seed, deck0.clone(), deck1.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Advance every battle by one tick, exactly as `Battle.step` would: battle
+    /// `i` gets `actions0[i]` / `actions1[i]`. Either list may be None (all
+    /// no-ops). Battles that have already finished are left untouched. Returns one
+    /// outcome code per battle. Runs on the worker threads with the GIL released;
+    /// results do not depend on the thread count.
+    #[pyo3(signature = (actions0=None, actions1=None))]
+    fn step(
+        &self,
+        py: Python<'_>,
+        actions0: BatchActions,
+        actions1: BatchActions,
+    ) -> PyResult<Vec<i32>> {
+        let a0 = self.batch_actions(actions0, "actions0")?;
+        let a1 = self.batch_actions(actions1, "actions1")?;
+        // Exclusive borrows of every battle for the duration of the call; the
+        // engines are then plain `&mut` data, safe to hand to other threads.
+        let mut guards: Vec<PyRefMut<'_, Battle>> = Vec::with_capacity(self.battles.len());
+        for b in &self.battles {
+            guards.push(b.bind(py).try_borrow_mut()?);
+        }
+        let mut work: Vec<(&mut Engine, Action, Action)> = guards
+            .iter_mut()
+            .zip(a0.into_iter().zip(a1))
+            .map(|(g, (x, y))| (&mut g.eng, x, y))
+            .collect();
+        let pool = self.pool.as_ref();
+        let outs: Vec<Outcome> = py.allow_threads(|| match pool {
+            Some(p) => p.install(|| {
+                work.par_iter_mut().map(|(e, x, y)| e.step([*x, *y])).collect()
+            }),
+            None => work.iter_mut().map(|(e, x, y)| e.step([*x, *y])).collect(),
+        });
+        Ok(outs.into_iter().map(outcome_code).collect())
+    }
+
+    /// Number of worker threads `step` uses (1 = the calling thread only).
+    #[getter]
+    fn threads(&self) -> usize {
+        self.threads
+    }
+
+    fn __len__(&self) -> usize {
+        self.battles.len()
+    }
+
+    /// Battle `i` as an ordinary `Battle` (negative indices count from the end).
+    fn __getitem__(&self, py: Python<'_>, i: isize) -> PyResult<Py<Battle>> {
+        let n = self.battles.len() as isize;
+        let j = if i < 0 { i + n } else { i };
+        if j < 0 || j >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err("battle index out of range"));
+        }
+        Ok(self.battles[j as usize].clone_ref(py))
+    }
+
+    /// All battles, in order, as a list of `Battle` objects.
+    fn battles(&self, py: Python<'_>) -> Vec<Py<Battle>> {
+        self.battles.iter().map(|b| b.clone_ref(py)).collect()
+    }
+
+    // ---- bulk raw state (one call instead of n) ----
+
+    /// Outcome code per battle (0 running, 1 player0 win, 2 player1 win, 3 draw).
+    fn outcomes(&self, py: Python<'_>) -> Vec<i32> {
+        self.battles.iter().map(|b| b.bind(py).borrow().outcome()).collect()
+    }
+    /// Whether each battle has finished.
+    fn done(&self, py: Python<'_>) -> Vec<bool> {
+        self.battles.iter().map(|b| b.bind(py).borrow().done()).collect()
+    }
+    /// Current tick of each battle.
+    fn ticks(&self, py: Python<'_>) -> Vec<i64> {
+        self.battles.iter().map(|b| b.bind(py).borrow().tick()).collect()
+    }
+    /// (player0_crowns, player1_crowns) per battle.
+    fn crowns(&self, py: Python<'_>) -> Vec<(i32, i32)> {
+        self.battles.iter().map(|b| b.bind(py).borrow().crowns()).collect()
+    }
+    /// `Battle.entities()` for every battle: a list (per battle) of entity tuples.
+    fn entities(
+        &self,
+        py: Python<'_>,
+    ) -> Vec<Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)>> {
+        self.battles.iter().map(|b| b.bind(py).borrow().entities()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BatchBattle(n={}, threads={})", self.battles.len(), self.threads)
     }
 }
 
