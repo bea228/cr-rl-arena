@@ -15,6 +15,43 @@ Severity (RL impact): **H** changes learned strategy · **M** noticeable ·
 
 ---
 
+## STATUS CORRECTION — 2026-11-15 (audit against the live code)
+
+Much of this file was written 2026-11-11/12 and **had gone stale**: it still lists
+mechanics as open `[BUG]`/`[MISSING]` that are in fact implemented and covered by the
+test suite (`cargo test --release`: 56/56 green at commit 265ddfb). Verified in the
+current `engine.rs` / `cards.rs` / `data/cards.json`:
+
+- **§1 King-tower activation — RESOLVED.** The king wakes only when the king itself is
+  damaged (`apply_damage`: "The king wakes only when the KING ITSELF is damaged") or when
+  a princess tower is **destroyed** — not on chip damage. Not a bug anymore.
+- **§1 Deploying units targetable — RESOLVED.** Target acquisition skips `e.deploy > 0`
+  ("a unit is a valid target only once placed"), so deploying units can't be hit.
+- **§2/§3 Flat 0.2 s wind-up — RESOLVED.** Every card carries a real `load_time`
+  (first-hit delay) from the decoded tables; the global constant is gone.
+- **§3 Roster mechanics — RESOLVED.** death spawns/splits, spawner buildings, charge/dash
+  (Prince/Bandit/Mega Knight/Battle Ram), ramp/siege (Inferno/Sparky/Mortar/X-Bow),
+  shields, suicide units, enemy-side deploys (`deploy_anywhere`: Miner/Goblin Drill),
+  reflect (Electro Giant), hook (Fisherman), jump+landing (Mega Knight), revive (Phoenix),
+  champions + abilities, and **evolutions** (evo-cycle charge → evolved variant) are all
+  implemented. Roster is 132 cards / 116 deployable.
+- **§4 Spells & status — RESOLVED.** poison, rage, heal, freeze, slow, tornado (pull),
+  clone, curse, rolling-pierce (Log/Bowler), knockback, and timed spawns are modeled; spells
+  commit at cast and resolve on a short fuse (dodge window).
+- **§9 Elixir Collector + Mirror — RESOLVED.** `elixir_per_pulse` grants the owner elixir
+  (10 cap); `mirror:true` replays the last card at +1 elixir.
+- **§6 Mass-weighted push — ALREADY DONE** (see the stale bullet in §6; push splits overlap
+  by mass ratio and knockback uses `mass_resist`).
+
+**Still genuinely open:** Goblinstein tether/revive activated ability; cross-lane aggro-pull
+(approximation); champion ability cooldowns (Mighty Miner/Monk/Little Prince — numeric values
+absent from the decoded data); tower-stat cross-check vs authoritative tables; and the
+by-design scope items (20 Hz tick, 1v1-only, no event modes, queue-order matchmaking). The
+per-section `[BUG]`/`[MISSING]` tags below are left in place but should be read through this
+correction; a tag flipped inline is marked `[RESOLVED 2026-11-15]`.
+
+---
+
 ## Resolved in the 2026-11-11 mechanics pass
 
 - **King activation bug** — king now wakes only when it is damaged or a Princess
@@ -82,23 +119,26 @@ Everything below is the original gap list; items above are now resolved.
 
 ## 1. Confirmed incorrect rules (bugs, not just simplifications)
 
-- `[BUG]` **H — King-tower activation is too eager.** The king wakes whenever
+- `[RESOLVED 2026-11-15]` ~~`[BUG]` **H — King-tower activation is too eager.**~~ Fixed:
+  `apply_damage` now wakes the king only on king-damage or princess-destruction. ~~The king wakes whenever
   *any* friendly tower takes *any* damage (`engine.rs::apply_damage`). Real rule:
   the king activates only when **it** is damaged or when a **Princess tower is
   destroyed** — chip damage to a Princess tower must not wake the king. Current
-  behavior lets a single arrow on a Princess tower activate the king early.
-- `[BUG]` **M — Deploying units are targetable.** During the 1 s deploy a unit is
+  behavior lets a single arrow on a Princess tower activate the king early.~~
+- `[RESOLVED 2026-11-15]` ~~`[BUG]` **M — Deploying units are targetable.**~~ Fixed:
+  acquisition skips `e.deploy > 0`, so a unit is a valid target only once placed. ~~During the 1 s deploy a unit is
   non-colliding but still `alive`, so it can be targeted and attacked. In CR a
-  troop is not a valid target until placement completes.
+  troop is not a valid target until placement completes.~~
 - `[BUG]` **L — Attack wind-up resets on any target change but not on leaving/re-entering range symmetrically.** The generic 0.2 s wind-up (`engaged` flag) is a
   coarse stand-in for per-card load/first-hit timing (see §3).
 
 ## 2. Timing & tick model
 
-- `[SIMPLIFIED]` **H — Flat 0.2 s attack wind-up for every card.** Real CR has
+- `[RESOLVED 2026-11-15]` **H — Flat 0.2 s attack wind-up for every card.** Fixed: every
+  card now uses its real per-card `load_time` (first-hit delay) from the decoded tables. ~~Real CR has
   per-card **load time** and **first-hit** values; melee trades (Mini-PEKKA vs
   tank, Prince connect, Inferno lock) depend on them. One global constant is the
-  single most impactful *mechanical* inaccuracy after the roster.
+  single most impactful *mechanical* inaccuracy after the roster.~~
 - `[SIMPLIFIED]` **M — 20 Hz tick rate.** The real engine advances on a finer
   internal timestep, so hit speeds, deploy times, and elixir quantize to 50 ms
   here and are not all frame-exact.
@@ -203,8 +243,10 @@ The spell system is **instant area damage + optional stun only**
 
 ## 6. Collision & physics
 
-- `[SIMPLIFIED]` **H — Symmetric separation (no mass).** Each body pushes the
-  other equally. Real CR is **mass/push-weight** based: a Knight shoves a Skeleton
+- `[RESOLVED 2026-11-15]` **H — Mass-weighted push** (this "no mass" bullet is stale).
+  Fixed: overlap splits by mass ratio and knockback uses `mass_resist`, so a Knight shoves a
+  Skeleton far more than the reverse. Old description follows: ~~Each body pushes the
+  other equally.~~ Real CR is **mass/push-weight** based: a Knight shoves a Skeleton
   far more than the reverse, and some units resist pushing. This changes surrounds,
   pig-pushing, and tank-behind-support positioning.
 - `[SIMPLIFIED]` **L — Two relaxation passes/tick**; dense crowds settle
@@ -244,8 +286,10 @@ The spell system is **instant area damage + optional stun only**
 
 ## 9. Elixir & economy
 
-- `[MISSING]` **M — Elixir Collector / Pump** (generates elixir).
-- `[MISSING]` **L — Mirror** (next card at +1 elixir).
+- `[RESOLVED 2026-11-15]` **M — Elixir Collector / Pump** — modeled: `elixir_per_pulse`
+  grants the owner elixir each pulse (respects the 10 cap).
+- `[RESOLVED 2026-11-15]` **L — Mirror** — modeled: `mirror:true` replays the owner's
+  last-deployed card at +1 elixir.
 - `[SIMPLIFIED]` **L — Overtime elixir multiplier/duration** (2 min, 3×) is a
   reasonable config, not matched to a specific CR mode/patch.
 - Correct: start 5, cap 10, 2.8 s regen, 2× starting at 1:00 remaining.
