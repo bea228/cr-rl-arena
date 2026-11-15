@@ -302,8 +302,12 @@ The spell system is **instant area damage + optional stun only**
     ahead on crowns (destroy a tower) in OT wins immediately. A same-tick exchange that
     leaves crowns tied keeps play going. Lowest-remaining-tower-HP is used only as the
     final fallback when OT expires still tied (a dead-even board is a draw).
-- `[SIMPLIFIED]` **L — Tower stats** (range 7.5/7.0, hit speeds, HP) are documented
-  level-11 values, not verified against authoritative tables.
+- `[RESOLVED 2026-11-15]` **L — Tower stats verified.** Cross-checked the sim's tower defs
+  (Princess HP 2534 / dmg 90 / hit 0.8 s / range 7.5; King HP 4008 / dmg 90 / hit 1.0 s /
+  range 7.0, dormant) against the canonical level-11 Tournament-Standard values — exact match
+  (the 2534 / 4008 HP figures are the precise lvl-11 numbers). The crown/match **rules** match
+  the decoded `battle_constants.json` authoritatively: `crowns_per_princess_tower = 1`,
+  `crowns_for_king_tower = 3`, `king_tower_ends_match = true`. No discrepancies; no change needed.
 - Correct: Princess = 1 crown, King = 3 and ends the match; king dormant until
   activated (modulo the activation bug in §1).
 
