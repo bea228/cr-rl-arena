@@ -89,3 +89,75 @@ def replay(sim, seed, actions, deck0=None, deck1=None):
         out = b.step(a0, a1)
         t += 1
     return {"outcome": out, "crowns": list(b.crowns()), "ticks": t}
+
+
+def trace(sim, rec, every=2):
+    """Re-simulate a saved replay and return a frame-by-frame trace for the viewer.
+
+    `rec` is a replay record (seed, actions, deck0, deck1, plus the recorded
+    result). Every `every`-th tick becomes a frame of unit positions. The trace
+    also lists the deploys that actually happened, and says whether this re-run
+    reached the same result as the recorded match: a replay saved by an older
+    simulator build may not, and the viewer should say so rather than show a
+    different game as if it were the real one.
+    """
+    b = sim.Battle()
+    b.reset(rec["seed"], rec.get("deck0"), rec.get("deck1"))
+    cards = b.deployable_cards() + ["princess_tower", "king_tower"]
+    idx = {n: i for i, n in enumerate(cards)}
+    by_tick = {}
+    for t, p, a in rec["actions"]:
+        by_tick.setdefault(t, [None, None])[p] = tuple(a)
+
+    def frame(t):
+        ents = []
+        for (owner, card, x, y, hp, mhp, flying, is_tower, deploying, eid, hw, hh) in b.entities():
+            flags = (1 if flying else 0) | (2 if is_tower else 0) | (4 if deploying else 0)
+            ents.append([eid, owner, idx.get(card, 0), round(x, 2), round(y, 2),
+                         round(hp / mhp, 3) if mhp else 0.0, flags, round(hw, 2), round(hh, 2)])
+        return [t, list(b.crowns()), [round(b.elixir(0), 1), round(b.elixir(1), 1)], ents]
+
+    frames, events = [frame(0)], []
+    # stop where the recorded match stopped (a match can be cut short by the server)
+    out, t = 0, 0
+    maxt = rec.get("ticks") or (sim.REGULATION_TICKS + sim.OVERTIME_TICKS + 2)
+    while out == 0 and t < maxt:
+        acts = by_tick.get(t)
+        if acts:
+            before = (b.elixir(0), b.elixir(1))
+            names = [None, None]
+            for p in (0, 1):
+                a = acts[p]
+                if a is None:
+                    continue
+                if a[0] == sim.ABILITY_SLOT:
+                    names[p] = "ability"
+                elif 0 <= a[0] < 4:
+                    names[p] = b.hand(p)[a[0]]
+            out = b.step(acts[0], acts[1])
+            for p in (0, 1):
+                # elixir only ever falls on a tick when something was actually played
+                if names[p] and b.elixir(p) < before[p]:
+                    events.append([t, p, names[p], round(acts[p][1], 1), round(acts[p][2], 1)])
+        else:
+            out = b.step(None, None)
+        t += 1
+        if t % every == 0 or out != 0:
+            frames.append(frame(t))
+
+    crowns = list(b.crowns())
+    want = rec.get("sim_outcome", rec.get("outcome"))
+    faithful = (out == want and crowns == list(rec.get("crowns", crowns))
+                and t == rec.get("ticks", t))
+    return {
+        "meta": {
+            "w": sim.WIDTH, "h": sim.HEIGHT, "river_y": sim.RIVER_Y, "river_half": sim.RIVER_HALF,
+            "bridges": list(sim.BRIDGES), "bridge_half": sim.BRIDGE_HALF,
+            "tps": sim.TICKS_PER_SECOND, "every": every,
+            "regulation": sim.REGULATION_TICKS, "cards": cards,
+            "outcome": out, "crowns": crowns, "ticks": t, "faithful": faithful,
+        },
+        "events": events,      # [tick, player, card, x, y] for each deploy that happened
+        "frames": frames,      # [tick, crowns, elixir, [[id, owner, card, x, y, hp, flags, hw, hh], ...]]
+    }
+

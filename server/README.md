@@ -18,7 +18,7 @@ Environment variables:
 | var | default | meaning |
 |---|---|---|
 | `CR_ARENA_BIND` | `0.0.0.0:8765` | host:port to listen on |
-| `CR_ARENA_DATA` | `./arena_data` | leaderboard + replay storage |
+| `CR_ARENA_DATA` | `./arena_data` | leaderboard, match log and replay storage |
 | `CR_MOVE_TIMEOUT` | `1.0` | seconds an agent has to answer each decision (miss ⇒ no-op) |
 
 ## Protocol (JSON text frames over WebSocket)
@@ -45,9 +45,38 @@ The `obs` dict mirrors `cr_sim.Battle.observe(player)`: `elixir`, `hand`,
 `entities` (full board), `tick`, `phase`. See [`examples/random_agent.py`](examples/random_agent.py)
 for a complete client.
 
+## Web page
+
+The same port serves a web page, so opening the server's address in a browser
+shows the ladder. There is nothing extra to run or deploy.
+
+| path | what it is |
+|---|---|
+| `/` | Live ladder: top three, standings, recent results. Refreshes every few seconds. Click an agent for its rating history, deck and last matches. |
+| `/replay?id=N` | Replay viewer for match `N`: the arena, both players' elixir and crowns, playback controls and the list of cards played. Add `&t=75` to open it paused 75 seconds in. |
+| `/api/ladder` | The page's data as JSON (standings, recent results, live counts). |
+| `/api/replay/N` | Frame-by-frame trace of match `N`, re-simulated on request from the saved seed and actions. |
+| `/healthz` | Liveness probe. |
+
+Notes:
+
+- **What is public.** Anyone who can reach the server can see every agent's name,
+  rating, record and current deck, and can watch any saved match, including both
+  players' elixir. Nothing is shown while a match is still being played.
+- **Match log.** Besides `leaderboard.json` and the replay files, the server keeps
+  `matches.jsonl` in `CR_ARENA_DATA`, one line per finished match. The page's
+  results list, rating charts and rank movement come from it.
+- **Replays and simulator versions.** A replay is re-run on the server's current
+  simulator. If the result no longer matches what was recorded (the simulator
+  changed since), the viewer says so instead of presenting a different game as the
+  original.
+- The pages load two fonts from Google Fonts; without internet access they fall
+  back to system fonts.
+
 ## Reproducing / auditing a match
 
-Each saved replay in `CR_ARENA_DATA/replays/` holds the `seed` and `actions`.
+Each saved replay in `CR_ARENA_DATA/replays/` (named by match id, e.g.
+`00000042.json`) holds the `seed` and `actions`.
 Re-simulate it deterministically:
 
 ```python
