@@ -2019,6 +2019,12 @@
    "targets": "ground",
    "target_buildings_only": true,
    "champion": true,
+   "ability": {
+    "kind": "revive",
+    "cost": 1,
+    "cooldown": 20.0,
+    "duration": 3.5
+   },
    "deploy_spawn": {
     "card": "goblinstein_doctor",
     "count": 1

@@ -62,6 +62,9 @@ impl SpellEffect {
 ///   Deflect  — Monk: a timed self damage-reduction window (projectile deflect).
 ///   Warp     — Boss Bandit: warp a fixed distance toward the enemy side and
 ///              turn briefly untargetable/invisible.
+///   Revive   — Goblinstein: the paired Doctor channels a beam that brings the
+///              fallen Monster back to the field. The Doctor is the actor, so the
+///              ability works even though the champion (Monster) is dead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AbilityKind {
     None,
@@ -71,6 +74,7 @@ pub enum AbilityKind {
     LaneBomb,
     Deflect,
     Warp,
+    Revive,
 }
 
 impl AbilityKind {
@@ -82,6 +86,7 @@ impl AbilityKind {
             "lanebomb" => AbilityKind::LaneBomb,
             "deflect" => AbilityKind::Deflect,
             "warp" => AbilityKind::Warp,
+            "revive" => AbilityKind::Revive,
             _ => AbilityKind::None,
         }
     }

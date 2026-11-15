@@ -58,6 +58,10 @@ enum AeoKind {
 const KB_REF_MASS: Fx = Fx::from_raw(crate::fixed::ONE / 2); // 0.5 tiles of "mass"
 // [kb] Tornado pull speed toward the eye, per tick (4.0 tiles/s at 20 ticks/s).
 const TORNADO_PULL_PER_TICK: Fx = Fx::from_raw(crate::fixed::ONE / 5); // 0.2
+/// [champ] Goblinstein's revived Monster returns at this fraction of its hp (full
+/// max_hp, reduced current hp). The exact revive fraction is absent from the decoded
+/// tables, so this is a documented approximation.
+const GOBLINSTEIN_REVIVE_PCT: i64 = 60;
 
 /// [M3] A spell that has been paid for and committed to a ground point but has not
 /// yet landed: it resolves `fuse` ticks later (its cast/travel window). Fixing the
@@ -577,6 +581,11 @@ impl Engine {
         if self.outcome != Outcome::Running || player > 1 {
             return false;
         }
+        // [champ] Goblinstein revive is channeled by the live Doctor, so it fires even
+        // when the champion (Monster) is dead and off the field. Dispatch it first.
+        if let Some(result) = self.try_goblinstein_revive(player) {
+            return result;
+        }
         let owner = player as u8;
         // locate the player's active champion with a real ability
         let mut idx = None;
@@ -586,7 +595,12 @@ impl Engine {
                 continue;
             }
             let d = &self.lib.defs[e.def];
-            if d.is_champion && d.ability != AbilityKind::None {
+            // Revive is dispatched by try_goblinstein_revive (actor = Doctor), so skip
+            // the Monster here even while it is alive.
+            if d.is_champion
+                && d.ability != AbilityKind::None
+                && d.ability != AbilityKind::Revive
+            {
                 idx = Some(i);
                 break;
             }
@@ -776,7 +790,67 @@ impl Engine {
                 self.entities[i].target = None;
                 true
             }
+            // handled above by try_goblinstein_revive (actor = Doctor); unreachable here
+            AbilityKind::Revive => false,
         }
+    }
+
+    /// [champ] Goblinstein revive. The Monster (champion) dies like any troop, but its
+    /// paired Dr. Goblinstein channels a beam that brings it back. The Doctor is the
+    /// ability actor and holds the cooldown, so this fires even when the Monster is off
+    /// the field. Returns `None` when the player has no Goblinstein on the board at all,
+    /// so the caller falls through to the generic champion-ability path.
+    fn try_goblinstein_revive(&mut self, player: usize) -> Option<bool> {
+        let owner = player as u8;
+        // the Revive champion def (Monster) and its paired summon def (Doctor)
+        let mut pair = None;
+        for (di, d) in self.lib.defs.iter().enumerate() {
+            if d.is_champion && d.ability == AbilityKind::Revive {
+                if let Some(doc) = d.deploy_spawn_id {
+                    pair = Some((di, doc));
+                    break;
+                }
+            }
+        }
+        let (monster_def, doctor_def) = pair?;
+        let monster_alive = self
+            .entities
+            .iter()
+            .any(|e| e.owner == owner && e.def == monster_def && e.alive());
+        // exactly one Doctor per Goblinstein (one champion per deck), so no tie-break
+        let doctor_idx = self
+            .entities
+            .iter()
+            .position(|e| e.owner == owner && e.def == doctor_def && e.active());
+        // no Goblinstein on the field -> not our case; let the generic path run
+        if !monster_alive && doctor_idx.is_none() {
+            return None;
+        }
+        // the Doctor channels the revive; without a live Doctor the ability is idle
+        let Some(doc_i) = doctor_idx else { return Some(false) };
+        // nothing to revive while the Monster still lives
+        if monster_alive {
+            return Some(false);
+        }
+        if self.entities[doc_i].ability_cd > 0 {
+            return Some(false);
+        }
+        let cost = Fx::from_int(self.lib.defs[monster_def].ability_cost as i64);
+        if self.elixir[player] < cost {
+            return Some(false);
+        }
+        let cd = self.lib.defs[monster_def].ability_cooldown_ticks.max(1);
+        let doc_pos = self.entities[doc_i].pos;
+        // revive the Monster beside the Doctor: full max_hp, current hp reduced. Position
+        // comes from the Doctor (already seat-symmetric), so the revive mirrors by seat.
+        let full = self.lib.defs[monster_def].hp;
+        self.spawn_unit(owner, monster_def, doc_pos);
+        if let Some(e) = self.entities.last_mut() {
+            e.hp = (full as i64 * GOBLINSTEIN_REVIVE_PCT / 100).max(1) as i32;
+        }
+        self.elixir[player] = self.elixir[player] - cost;
+        self.entities[doc_i].ability_cd = cd;
+        Some(true)
     }
 
     /// (champion_on_field, ability_cooldown_ticks_remaining, ability_cost) for a
@@ -4786,6 +4860,55 @@ mod r2_goblinstein_tests {
             v
         };
         assert_eq!(run(), run(), "Goblinstein pairing must replay identically");
+    }
+
+    // [champ] Revive ability: the live Doctor channels the Monster back after it dies.
+    #[test]
+    fn goblinstein_doctor_revives_the_fallen_monster() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monster = eng.lib.id_of("goblinstein").unwrap();
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        eng.place_card(0, monster, at(9.0, 6.0)); // deploys the Monster + its Doctor
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        eng.elixir[0] = Fx::from_int(10);
+        let n = |eng: &Engine, d: usize| eng.entities.iter().filter(|e| e.def == d && !e.dead).count();
+
+        // nothing to revive while the Monster is alive -> ability stays idle
+        assert_eq!(n(&eng, monster), 1, "Monster deployed");
+        assert!(!eng.activate_ability(0), "no revive while the Monster is alive");
+        assert_eq!(eng.elixir[0], Fx::from_int(10), "idle activation spends no elixir");
+
+        // the Monster dies (removed, as the end-of-tick death pass would)
+        eng.entities.retain(|e| e.def != monster);
+        assert_eq!(n(&eng, monster), 0, "Monster is gone");
+        assert_eq!(n(&eng, doctor), 1, "Doctor is still on the field");
+
+        // activate: the Doctor revives the Monster beside itself at reduced hp
+        assert!(eng.activate_ability(0), "the Doctor revives the fallen Monster");
+        assert_eq!(n(&eng, monster), 1, "Monster is back on the field");
+        assert_eq!(n(&eng, doctor), 1, "the revive does not spawn a second Doctor");
+        let full = eng.lib.defs[monster].hp;
+        let m = eng.entities.iter().find(|e| e.def == monster).unwrap();
+        assert!(m.hp > 0 && m.hp < full, "revived at reduced current hp");
+        assert_eq!(m.max_hp, full, "revived with full max hp");
+    }
+
+    // The ability is the Doctor's: with no live Doctor, the fallen Monster stays down.
+    #[test]
+    fn goblinstein_revive_needs_a_live_doctor() {
+        let mut eng = Engine::new(Library::default_lib());
+        let monster = eng.lib.id_of("goblinstein").unwrap();
+        let doctor = eng.lib.id_of("goblinstein_doctor").unwrap();
+        eng.place_card(0, monster, at(9.0, 6.0));
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        eng.elixir[0] = Fx::from_int(10);
+        // both parts die
+        eng.entities.retain(|e| e.def != monster && e.def != doctor);
+        assert!(!eng.activate_ability(0), "no revive without a live Doctor");
     }
 }
 
