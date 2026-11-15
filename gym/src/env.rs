@@ -219,7 +219,7 @@ impl Battle {
     /// Structured per-player observation dict (scalars + entity lists).
     fn observe<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
         let p = player.min(1);
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("tick", self.eng.tick)?;
         d.set_item("player", p)?;
         d.set_item("elixir", self.elixir(p))?;

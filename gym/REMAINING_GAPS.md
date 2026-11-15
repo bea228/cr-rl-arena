@@ -185,11 +185,14 @@ not implemented.
   1.0.229` → fake `syn 3.0.10` — and "fixed" by pinning serde_json 1.0.146 / serde 1.0.228 with
   upper bounds. All of that was mistaken, per the correction above.
   - **LOW — `pyo3 0.22.6` (RUSTSEC-2025-0020, buffer overflow in `PyString::from_object`,
-    fixed only in 0.24.x):** RECORDED, not forced — the fix requires a 0.22→0.24 MAJOR API
-    bump that would rework the `#[pyclass]`/`#[pymethods]`/`Bound<PyModule>` bindings and risk
-    the PyO3/maturin build, and the vulnerable API (`PyString::from_object`) is not used by
-    this crate nor exercised by `cargo test` (the rlib/determinism path). Per the conservative
-    guidance, logged rather than risk the build.
+    fixed only in 0.24.x): RESOLVED (2026-11-14).** Bumped `pyo3` to `0.24` (resolves 0.24.2).
+    The migration was a two-line change — the crate already used the modern `Bound<>` API
+    (`#[pymodule] fn _core(m: &Bound<'_, PyModule>)`, `add_class`, `Bound<'py, PyDict>` sigs);
+    only `PyDict::new_bound(py)` → `PyDict::new(py)` at `env.rs:222` was deprecated. Validated
+    end to end: clean build (no deprecations), `cargo test --release` 56/56, **the Python
+    pytest suite 10/10 against the 0.24-built extension** (fog-of-war guard + determinism), and
+    the changed `observe()` dict path exercised directly at runtime. (Stayed on 0.24, not the
+    newer 0.30, to keep the jump conservative.)
   - server (`server/pyproject.toml`): only `websockets>=12.0` + the local gym; no pinned
     vulnerable version to bump (floor already current).
   Scan confirmed zmij/syn3 are the ONLY poisoned edges in the tree. Test:

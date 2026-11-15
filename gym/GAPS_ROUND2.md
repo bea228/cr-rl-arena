@@ -122,34 +122,22 @@ items open. This round closes them. Same discipline as before.
   system and are not present in the decoded logic tables, so no corrected value can be sourced.
   Boss Bandit's 3.0s and Goblinstein's deferred tether (R2) are the only data-grounded cases.
   No code change; approximations left intact. Commit: (checklist-only)
-- [~] **R4 — pyo3 advisory RUSTSEC-2025-0020 (low).** DEFERRED after a conservative attempt;
-  reverted cleanly to `pyo3 0.22.6` (no half-migrated build — `cargo test --release` 56/56 green
-  on the restored pin). What I did and found:
-  - **Attempted the bump.** Changed `gym/Cargo.toml` to `pyo3 = "0.24"` → resolved `pyo3 0.24.2`
-    and `cargo build --release` + `cargo test --release` BOTH succeeded (56/56). The ENTIRE API
-    breakage was a single deprecation: `PyDict::new_bound(py)` → `PyDict::new(py)` at
-    `src/env.rs:222` (a pure rename; `new_bound` is a deprecated alias). Nothing else changed —
-    the crate already uses the modern `Bound<'_, _>` API (`#[pyclass]`/`#[pymethods]`/
-    `#[pymodule]`/`#[pyo3(signature=…)]`/`PyResult`/`Bound<'py, PyDict>`), which is stable across
-    0.22→0.24. So the migration is trivial, NOT invasive.
-  - **Why deferred anyway** (per the supervisor's R4 caution — don't act on an unverified
-    advisory, and the earlier A8 "zmij typosquat" security alarm this session turned out to be a
-    FALSE POSITIVE):
-    1. **Advisory unconfirmable locally.** No `cargo-audit`/`cargo-deny` installed and no
-       `~/.cargo/advisory-db`; I will not over-trust memory about RUSTSEC-2025-0020. I cannot
-       positively confirm the advisory exists/applies from the tools available.
-    2. **Zero exposure regardless.** The vulnerable API `PyString::from_object` is definitively
-       UNUSED — `grep -rn "PyString\|from_object" src/` = 0 hits. So even if the advisory is real,
-       this crate is not affected (the standing mitigation).
-    3. **Cannot runtime-validate the binding.** maturin/pytest are off-limits (shared venv), and
-       `cargo test --release` (the stated gate) only exercises the pure-Rust `rlib` — it never
-       calls the `#[pyclass]`/`#[pymethods]` runtime path. Merging a 2-major-version bump of a
-       crate whose sole purpose IS the Python boundary, validated only at compile time, is the
-       kind of unjustified risk the caution warns against.
-  - **Determinism:** unaffected either way (pyo3 is the binding layer; the fixed-point engine is
-    pure Rust and untouched).
-  - **To apply later** (with pytest access): bump `Cargo.toml` pyo3 to `0.24`, change the one
-    `PyDict::new_bound` → `PyDict::new`, done. Commit: (checklist-only; no code change)
+- [x] **R4 — pyo3 advisory RUSTSEC-2025-0020 (low). RESOLVED (2026-11-14, supervising session).**
+  Bumped `gym/Cargo.toml` to `pyo3 = "0.24"` (resolves `pyo3 0.24.2`) and applied the single
+  deprecation fix (`PyDict::new_bound(py)` → `PyDict::new(py)` at `src/env.rs:222`). Nothing else
+  needed — the crate already uses the modern `Bound<'_, _>` API across `#[pyclass]`/`#[pymethods]`/
+  `#[pymodule]`/`Bound<'py, PyDict>`, stable from 0.22→0.24. Stayed on 0.24 (not 0.30) to keep the
+  jump conservative.
+  - **This is the validation the round-2 worker could not run.** With the shared venv now usable:
+    `cargo build --release` clean (no deprecations), `cargo test --release` 56/56, `maturin develop
+    --release` installed the 0.24 extension, and **the Python pytest suite passed 10/10** against it
+    (`tests/test_fog.py` fog-of-war guard + `tests/test_determinism.py`). The changed `observe()`
+    `PyDict::new` path was also exercised directly at runtime (12-key dict, both `Battle.observe`
+    and `PlayerView.observe`).
+  - **Determinism:** unaffected (pyo3 is the binding layer; the fixed-point engine is pure Rust).
+  - The worker's original deferral was sound at the time (it genuinely could not runtime-validate a
+    2-major binding jump and could not confirm the advisory). Completed here because the venv/pytest
+    were available. Commit: (see A8/R4 cleanup commit).
 
 ---
 
@@ -168,8 +156,9 @@ Every item independently verified before merge to `main` (pushed). No faked chec
   `Cooldown = "ability_cooldown"` (named stat-ref, no number), and `character_abilities.csv`'s
   Cooldown column is empty for them. Only Boss Bandit has a real inline `3000` (already used).
   The data genuinely lacks these cooldowns — correct deferral.
-- **R4** — Cargo.toml cleanly back to pyo3 0.22 (no half-migration). Deferral is well-reasoned
-  (can't runtime-validate a 2-major binding jump here; can't confirm the advisory — same
-  skepticism as the zmij false-positive). One-line fix is documented for later.
+- **R4** — now COMPLETED (2026-11-14): pyo3 bumped to 0.24.2, validated with the full pytest
+  suite (10/10) against the freshly-built extension, plus 56/56 Rust tests and a direct runtime
+  check of the changed `observe()` path. The round-2 deferral was well-reasoned for its context
+  (no pytest access then); this session had the venv and finished it.
 - **Full suite** on merged `main`: 56 Rust tests pass. End-to-end: 132 cards / 116 deployable,
   Mother Witch + Goblinstein deploy/simulate, determinism holds. Shared venv refreshed.
