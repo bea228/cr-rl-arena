@@ -39,6 +39,19 @@ code produces bit-identical matches whether it runs inside a student's training
 loop or inside the competition server. A match is fully described by its
 `(seed, action-log)`, so every tournament match can be replayed and audited.
 
+## Contestant setup
+
+Writing an agent? One script installs Python (if needed), Rust, a `.venv`, the
+simulator and its Python packages. From the repo root:
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\install.ps1   # Windows  (add -WithTorch for PyTorch)
+bash install.sh                                          # macOS / Linux  (add --torch)
+```
+
+Re-run it after every `git pull`. See [`SETUP.md`](SETUP.md) for what it
+installs, the requirements, and a note for Windows Smart App Control.
+
 ## Quickstart
 
 ```bash
