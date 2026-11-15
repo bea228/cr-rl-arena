@@ -163,20 +163,27 @@ not implemented.
   flagged advisories (`gym` + `server` dependency manifests) and bump conservatively to
   patched versions; `cargo test` must stay green. If a bump can't be done safely, record the
   advisory IDs and why. Acceptance: the fixable advisories resolved; build + tests green.
-  DONE: the gym `Cargo.lock` was supply-chain POISONED — the crates.io index metadata for
-  `serde_json >=1.0.147` lists a typosquat **`zmij`** in place of the real `ryu` (float
-  formatter), and `serde_derive 1.0.229` lists a fake **`syn ^3`** (3.0.10) in place of the
-  real `syn 2.x`; the malicious crates were cached locally so the build passed silently
-  (verified via `cargo tree`: serde_json→zmij, serde_derive→syn v3.0.10, and the index cache
-  scan showing serde_json 1.0.130–1.0.146 use ryu but 1.0.147+ use zmij).
-  - **HIGH — `zmij` (ryu typosquat via serde_json):** FIXED by pinning serde_json to the last
-    clean release **1.0.146** (`cargo update -p serde_json --precise 1.0.146` → removes zmij,
-    restores `ryu 1.0.23`).
-  - **MODERATE — fake `syn 3.0.10` (via serde_derive 1.0.229):** FIXED by pinning serde to
-    **1.0.228** (last release whose serde_derive uses `syn ^2.0.81`) → removes `syn 3.0.10`,
-    keeps `syn 2.0.119`.
-  - Added upper bounds in `gym/Cargo.toml` (`serde >=1.0.200,<1.0.229`; `serde_json
-    >=1.0.100,<1.0.147`) so the lock can't drift back into the poisoned range.
+  **CORRECTION (2026-11-14): the "supply-chain poisoning" reported below was a FALSE POSITIVE.**
+  A forensic re-check (user-requested) — reading the *official* local crates.io index history,
+  the crates' build scripts, and their source — found both flagged crates are legitimate:
+  - **`zmij`** is dtolnay's real Schubfach float formatter, the successor to `ryu` by the *same
+    author*, with an organic published version history (0.0.1 … 1.0.23; early versions even
+    depend on `ryu`). `serde_json >=1.0.147` adopting it is a normal upstream change.
+  - **`syn 3.0`** is a real new major release of dtolnay's `syn`, not a fake.
+  The alarm fired only because both crates post-date this tool's Jan-2026 knowledge cutoff (the
+  env clock is Nov 2026); an unfamiliar-but-newer crate was misread as a typosquat. There was no
+  attack, no malicious code, and no secret exposure — nothing needed rotating.
+  - **Resolution:** the unjustified upper-bound pins in `gym/Cargo.toml` were **removed**
+    (relaxed back to `serde = "1"` / `serde_json = "1"`). The lockfile was left at its then-current
+    clean resolution; the deps are free to move forward to the newer (legitimate) releases.
+  - Lesson recorded: verify a "supply-chain" claim by inspecting author/history/build-script/
+    source *before* concluding — an unfamiliar crate is almost always newer-than-training, not
+    malware. (See memory `rl-sim-stack.md`; SendFeedback filed re: overconfidence.)
+
+  ~~Original (incorrect) finding, kept for the record:~~ the gym `Cargo.lock` was reported
+  supply-chain POISONED — `serde_json >=1.0.147` → `zmij` "typosquat" of `ryu`, `serde_derive
+  1.0.229` → fake `syn 3.0.10` — and "fixed" by pinning serde_json 1.0.146 / serde 1.0.228 with
+  upper bounds. All of that was mistaken, per the correction above.
   - **LOW — `pyo3 0.22.6` (RUSTSEC-2025-0020, buffer overflow in `PyString::from_object`,
     fixed only in 0.24.x):** RECORDED, not forced — the fix requires a 0.22→0.24 MAJOR API
     bump that would rework the `#[pyclass]`/`#[pymethods]`/`Bound<PyModule>` bindings and risk
@@ -236,10 +243,11 @@ pushed). No faked checkmarks found.
 - **A6** — independently confirmed against the raw AEO tables: poison
   `CrownTowerDamagePercent = -78` → crown% 22 (was 30), earthquake `-40` → 60
   (was 33). Corrections are correct.
-- **A8** — confirmed the `zmij` typosquat (replacing `ryu`) and fake `syn 3.0.10`
-  were genuinely in the original `Cargo.lock` (since the initial commit), and the
-  fix restores `ryu 1.0.23` / `syn 2.x`, pins `serde_json` below the compromised
-  release, with no `zmij` left. Real, valuable find — not a hallucination.
+- **A8** — RETRACTED. The audit originally called the `zmij`/`syn 3.0.10` finding
+  "a real, valuable find — not a hallucination." That endorsement was wrong: a later
+  forensic re-check showed both crates are legitimate dtolnay releases newer than the
+  Jan-2026 knowledge cutoff, so the "typosquat" claim was a false positive. The
+  unjustified pins have been relaxed (see the A8 entry's CORRECTION above).
 - **A2–A5, A7, B1–B5** — inspected diffs + per-item tests; the two deferrals
   (Mother Witch, Goblinstein) are honestly `[~]` with concrete technical reasons.
 - **Full suite** on merged `main`: 47 Rust + (Python) pass. End-to-end: 128 cards /

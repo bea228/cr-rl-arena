@@ -4344,12 +4344,13 @@ mod a7_tests {
         assert_eq!(count(&eng, "goblins"), 0, "no curse => no transform");
     }
 
-    // [A8] The legitimate serde_json (backed by `ryu`, not the `zmij` typosquat) is
-    // linked and formats/parses correctly -- a sanity check that the supply-chain
-    // downgrade kept the JSON toolchain working end to end.
+    // [A8] serde_json is linked and formats/parses correctly end to end -- a plain sanity
+    // check on the JSON toolchain. (Historical note: an earlier session wrongly flagged
+    // serde_json's newer `zmij`/`syn 3.0` deps as a typosquat; that was a false positive --
+    // `zmij` is dtolnay's legitimate ryu-successor float formatter. See REMAINING_GAPS.md A8.)
     #[test]
     fn serde_json_toolchain_is_intact() {
-        // ryu float formatting (the crate zmij masqueraded as) is exact + shortest.
+        // float formatting is exact + shortest.
         assert_eq!(serde_json::to_string(&3.5f64).unwrap(), "3.5");
         assert_eq!(serde_json::to_string(&1.0f64).unwrap(), "1.0");
         let v: serde_json::Value = serde_json::from_str("{\"a\": 2.56, \"b\": [1,2,3]}").unwrap();
