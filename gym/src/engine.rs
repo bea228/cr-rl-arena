@@ -2275,6 +2275,7 @@ impl Engine {
         curse_src: &[i32], // [curse] def id the cursed victim becomes on death
     ) {
         let mut activate = [false; 2];
+        let mut king_down = [false; 2]; // [seat] kings destroyed this tick, by owner
         for i in 0..self.entities.len() {
             if stun_add[i] > 0 {
                 let s = self.entities[i].stun.max(stun_add[i]);
@@ -2453,9 +2454,11 @@ impl Engine {
                     // let a player's total exceed the hard cap of 3 (e.g. 1 princess + king
                     // reported as 4). Set the total to the win value instead of adding.
                     self.crowns[1 - owner] = 3;
-                    if self.outcome == Outcome::Running {
-                        self.outcome = if owner == 0 { Outcome::Win1 } else { Outcome::Win0 };
-                    }
+                    // [seat] The result is decided after the whole pass (below), not
+                    // here: deciding it on the first dead king found made a same-tick
+                    // double king kill a win for player 1, only because player 0's
+                    // king sits earlier in the entity list.
+                    king_down[owner] = true;
                 } else {
                     // A destroyed PRINCESS (arena) tower is 1 crown; clamp to the [0,3]
                     // cap defensively so crowns can never exceed 3.
@@ -2464,6 +2467,16 @@ impl Engine {
                     activate[owner] = true;
                 }
             }
+        }
+        // [seat] king kills end the match: one king down is a win for the other
+        // side, both down on the same tick is a draw (3-3).
+        if self.outcome == Outcome::Running {
+            self.outcome = match king_down {
+                [true, true] => Outcome::Draw,
+                [true, false] => Outcome::Win1,
+                [false, true] => Outcome::Win0,
+                [false, false] => Outcome::Running,
+            };
         }
         for e in self.entities.iter_mut() {
             if e.is_king && activate[e.owner as usize] {
@@ -5036,6 +5049,27 @@ mod seat_tests {
             }
             assert_eq!(fielded, [true, true], "start {start}: both seats must actually deploy");
         }
+    }
+
+    /// Both king towers destroyed on the same tick is a 3-3 draw, not a win for
+    /// whichever seat's king happens to be processed second; a lone king kill
+    /// still wins for the other side.
+    #[test]
+    fn simultaneous_king_kills_are_a_draw() {
+        let kill_kings = |owners: &[u8]| {
+            let mut eng = Engine::new(Library::default_lib());
+            eng.reset(1, None);
+            for e in eng.entities.iter_mut() {
+                if e.is_king && owners.contains(&e.owner) {
+                    e.hp = 0;
+                }
+            }
+            eng.step(noop());
+            (eng.outcome, eng.crowns)
+        };
+        assert!(kill_kings(&[0, 1]) == (Outcome::Draw, [3, 3]));
+        assert!(kill_kings(&[0]) == (Outcome::Win1, [0, 3]));
+        assert!(kill_kings(&[1]) == (Outcome::Win0, [3, 0]));
     }
 
     /// Fixed-point multiply is sign-symmetric, so mirrored motion is exact.
