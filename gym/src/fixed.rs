@@ -37,8 +37,12 @@ impl Fx {
 
     #[inline]
     pub fn mul(self, o: Fx) -> Fx {
-        // widen to i128 to avoid overflow, then shift back
-        Fx(((self.0 as i128 * o.0 as i128) >> FRAC_BITS) as i64)
+        // widen to i128 to avoid overflow, then scale back. Division (truncate toward
+        // zero), NOT an arithmetic shift (floor): a shift rounds negative products
+        // away from zero, so anything moving in -y/-x covered ~1 ulp more per multiply
+        // than its mirror image and player 1's units out-walked player 0's. Truncation
+        // matches `div`/`divi` and makes mul sign-symmetric: (-a)*b == -(a*b).
+        Fx(((self.0 as i128 * o.0 as i128) / (1i128 << FRAC_BITS)) as i64)
     }
     #[inline]
     pub fn div(self, o: Fx) -> Fx {

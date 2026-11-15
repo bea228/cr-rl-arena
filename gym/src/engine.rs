@@ -346,7 +346,13 @@ impl Engine {
         if self.outcome != Outcome::Running {
             return self.outcome;
         }
-        for p in 0..2 {
+        // [seat] Same-tick actions are applied in an order that alternates with tick
+        // parity instead of always player 0 first. Entity ids no longer decide any
+        // tie (see `tie_key`), so for deploys the order is immaterial; it only matters
+        // when both champions fire board-affecting abilities on the very same tick,
+        // and alternating stops either seat from always resolving first there.
+        let order: [usize; 2] = if self.tick % 2 == 0 { [0, 1] } else { [1, 0] };
+        for p in order {
             // [champ] the reserved slot activates the champion ability in-stream
             // (same tick ordering as a deploy) so replays stay deterministic.
             if actions[p].slot == ABILITY_SLOT {
@@ -415,7 +421,7 @@ impl Engine {
             return;
         }
         for k in 0..count {
-            let off = Self::spawn_offset(k, count);
+            let off = Self::spawn_offset_for(player as u8, k, count);
             self.spawn_unit(player as u8, spawn_def, V2::new(pos.x + off.x, pos.y + off.y));
         }
         // [mix] mixed-composition cards (Goblin Gang, Rascals): spawn the secondary unit
@@ -430,7 +436,7 @@ impl Engine {
             let back = if player == 0 { Fx::from_int(-1) } else { Fx::from_int(1) };
             let base = V2::new(pos.x, pos.y + back);
             for k in 0..deploy_cnt {
-                let off = Self::spawn_offset(k, deploy_cnt);
+                let off = Self::spawn_offset_for(player as u8, k, deploy_cnt);
                 self.spawn_unit(player as u8, sid, V2::new(base.x + off.x, base.y + off.y));
             }
         }
@@ -497,6 +503,14 @@ impl Engine {
     /// group engages and gets splashed. The offsets are small (<~1 tile) so every
     /// unit stays on/next to the deploy tile; the collision solver then settles them.
     /// Pure fixed-point => fully deterministic.
+    /// [seat] `spawn_offset` oriented for `owner`: formations are authored with +y as
+    /// "forward" (player 0's attack direction), so player 1's are reflected in y to
+    /// keep the apex/front row facing the enemy for both seats.
+    fn spawn_offset_for(owner: u8, k: i32, count: i32) -> V2 {
+        let off = Self::spawn_offset(k, count);
+        if owner == 0 { off } else { V2::new(off.x, Fx(0) - off.y) }
+    }
+
     fn spawn_offset(k: i32, count: i32) -> V2 {
         if count <= 1 {
             return V2::new(Fx(0), Fx(0));
@@ -614,7 +628,7 @@ impl Engine {
                 self.entities[i].ability_cd = cd;
                 // ring of summoned units around the champion (reuse spawn system)
                 for k in 0..acount {
-                    let off = Self::spawn_offset(k, acount);
+                    let off = Self::spawn_offset_for(owner, k, acount);
                     let p = V2::new(cpos.x + off.x.mul(aradius), cpos.y + off.y.mul(aradius));
                     self.spawn_unit(owner, sid, p);
                 }
@@ -625,17 +639,30 @@ impl Engine {
                 // the gap to it (so the dash always connects) and damages every
                 // enemy within radius of the travelled line.
                 let search = arange;
-                let mut best: Option<(V2, Fx)> = None;
+                // [seat] equal distances break by `tie_key`, not by entity order
+                let mut best: Option<(V2, Fx, u32)> = None;
                 for e in self.entities.iter() {
                     if e.dead || e.owner == owner || !e.alive() || e.deploy > 0 {
                         continue;
                     }
                     let dist = e.pos.sub(cpos).len();
-                    if dist <= search && best.map_or(true, |(_, bd)| dist < bd) {
-                        best = Some((e.pos, dist));
+                    if dist > search {
+                        continue;
+                    }
+                    let wins = match best {
+                        None => true,
+                        Some((bp, bd, bid)) => {
+                            dist < bd
+                                || (dist == bd
+                                    && tie_key(cpos, owner, e.pos.x, e.pos.y, e.id)
+                                        < tie_key(cpos, owner, bp.x, bp.y, bid))
+                        }
+                    };
+                    if wins {
+                        best = Some((e.pos, dist, e.id));
                     }
                 }
-                let Some((tcenter, tdist)) = best else { return false };
+                let Some((tcenter, tdist, _)) = best else { return false };
                 // feasible: consume and perform the dash
                 self.elixir[player] = self.elixir[player] - cost;
                 self.entities[i].ability_cd = cd;
@@ -860,9 +887,7 @@ impl Engine {
                     if e.dead || e.owner == owner {
                         continue;
                     }
-                    let dx = e.pos.x - pos.x;
-                    let dy = e.pos.y - pos.y;
-                    if dx.mul(dx) + dy.mul(dy) > r2 {
+                    if !ent_in_radius(e, pos, rad, r2) {
                         continue;
                     }
                     if effect == SpellEffect::Freeze {
@@ -971,7 +996,7 @@ impl Engine {
         if effect != SpellEffect::Spawn {
             if let Some(sid) = spawn_def {
                 for k in 0..spawn_count {
-                    let off = Self::spawn_offset(k, spawn_count);
+                    let off = Self::spawn_offset_for(owner, k, spawn_count);
                     self.spawn_unit(owner, sid, V2::new(pos.x + off.x, pos.y + off.y));
                 }
             }
@@ -1015,9 +1040,7 @@ impl Engine {
                 if e.dead {
                     continue;
                 }
-                let dx = e.pos.x - pos.x;
-                let dy = e.pos.y - pos.y;
-                if dx.mul(dx) + dy.mul(dy) > r2 {
+                if !ent_in_radius(e, pos, radius, r2) {
                     continue;
                 }
                 let enemy = e.owner != owner;
@@ -1290,8 +1313,21 @@ impl Engine {
                 }
             }
             self.pending_casts = keep;
-            for pc in ready {
-                self.resolve_spell(pc.owner, pc.def, pc.pos);
+            // [seat] Spells landing on the same tick: resolve the ones that only act on
+            // units already on the field first, and the unit-creating ones (Clone,
+            // Goblin Barrel, Graveyard) last. Otherwise the cast that happened to be
+            // queued second would catch (freeze/curse) units the first one just made,
+            // while the reverse pairing could not -- a queue-order (seat) dependence.
+            let creates = |lib: &Library, def: usize| {
+                let d = &lib.defs[def];
+                d.effect == SpellEffect::Clone || d.spawn_id.is_some()
+            };
+            for pass in [false, true] {
+                for pc in ready.iter() {
+                    if creates(&self.lib, pc.def) == pass {
+                        self.resolve_spell(pc.owner, pc.def, pc.pos);
+                    }
+                }
             }
         }
 
@@ -1825,9 +1861,10 @@ impl Engine {
         }
 
         // 2. Acquire: nearest valid in sight, else nearest tower/building to march on.
-        // [A5] Ties on distance break deterministically toward the LOWER entity id
-        // (not merely scan order), so acquisition never depends on entity storage
-        // order. `better(cur, j, gap)` == "(gap, id) is strictly ahead of cur".
+        // [A5]/[seat] Ties on distance break deterministically by `tie_key` -- a
+        // geometric key that is the same for both seats -- and only then by entity
+        // id, so acquisition depends on neither entity storage order nor on which
+        // player's unit was created first.
         let sight = d.sight.max(d.range);
         let mut best_sight: Option<(usize, Fx)> = None;
         let mut best_march: Option<(usize, Fx)> = None;
@@ -1835,7 +1872,12 @@ impl Engine {
         let better = |cur: Option<(usize, Fx)>, j: usize, gap: Fx| -> bool {
             match cur {
                 None => true,
-                Some((cj, cg)) => gap.0 < cg.0 || (gap.0 == cg.0 && snap.id[j] < snap.id[cj]),
+                Some((cj, cg)) => {
+                    gap.0 < cg.0
+                        || (gap.0 == cg.0
+                            && tie_key(ipos, e.owner, snap.x[j], snap.y[j], snap.id[j])
+                                < tie_key(ipos, e.owner, snap.x[cj], snap.y[cj], snap.id[cj]))
+                }
             }
         };
         for j in 0..snap.x.len() {
@@ -1872,7 +1914,8 @@ impl Engine {
 
     /// Push overlapping bodies apart. Troops (and flyers among themselves)
     /// separate; towers and buildings are immovable obstacles. Deploying units
-    /// are not yet solid. Two relaxation passes keep crowds stable.
+    /// are not yet solid. Two relaxation passes keep crowds stable; each pass is
+    /// order-independent (see `base` below), so neither seat is favoured.
     fn resolve_collisions(&mut self) {
         let n = self.entities.len();
         let pos: Vec<V2> = self.entities.iter().map(|e| e.pos).collect();
@@ -1880,6 +1923,7 @@ impl Engine {
         let rad: Vec<Fx> = self.entities.iter().map(|e| self.lib.defs[e.def].radius).collect();
         let mass: Vec<Fx> = self.entities.iter().map(|e| self.lib.defs[e.def].mass).collect();
         let flying: Vec<bool> = self.entities.iter().map(|e| self.lib.defs[e.def].flying).collect();
+        let owner: Vec<u8> = self.entities.iter().map(|e| e.owner).collect();
         let solid: Vec<bool> = self
             .entities
             .iter()
@@ -1894,6 +1938,12 @@ impl Engine {
         let mut disp = vec![V2::default(); n];
 
         for _pass in 0..2 {
+            // [seat] Each pass reads the displacements as they stood when the pass
+            // began (`base`) and accumulates into `disp`, so the result does not depend
+            // on the order pairs are visited in. Reading `disp` live made a cluster of
+            // mutually-overlapping bodies resolve differently for whichever side's
+            // units sat earlier in the entity list (seat-dependent crowd splits).
+            let base = disp.clone();
             for a in 0..n {
                 if !solid[a] {
                     continue;
@@ -1911,8 +1961,8 @@ impl Engine {
                     let box_b = half[b].x.0 > 0 || half[b].y.0 > 0;
                     if box_a || box_b {
                         let (bx, cx) = if box_a { (a, b) } else { (b, a) };
-                        let cb = pos[bx].add(disp[bx]);
-                        let cc = pos[cx].add(disp[cx]);
+                        let cb = pos[bx].add(base[bx]);
+                        let cc = pos[cx].add(base[cx]);
                         let ex = half[bx].x + rad[cx];
                         let ey = half[bx].y + rad[cx];
                         let dx = cc.x - cb.x;
@@ -1920,16 +1970,22 @@ impl Engine {
                         let px = ex - dx.abs();
                         let py = ey - dy.abs();
                         if px.0 > 0 && py.0 > 0 {
+                            // [seat] A body exactly on the box's centre line has no
+                            // natural side to leave by; send it toward the arena centre
+                            // (centre column / river) so the choice mirrors with the
+                            // box, instead of always +x / +y.
+                            let right = dx.0 > 0 || (dx.0 == 0 && cb.x < WIDTH.divi(2));
+                            let up = dy.0 > 0 || (dy.0 == 0 && cb.y < RIVER_Y);
                             if px <= py {
-                                disp[cx].x = disp[cx].x + if dx.0 >= 0 { px } else { -px };
+                                disp[cx].x = disp[cx].x + if right { px } else { -px };
                             } else {
-                                disp[cx].y = disp[cx].y + if dy.0 >= 0 { py } else { -py };
+                                disp[cx].y = disp[cx].y + if up { py } else { -py };
                             }
                         }
                         continue;
                     }
-                    let pa = pos[a].add(disp[a]);
-                    let pb = pos[b].add(disp[b]);
+                    let pa = pos[a].add(base[a]);
+                    let pb = pos[b].add(base[b]);
                     let delta = pb.sub(pa);
                     let mind = rad[a] + rad[b];
                     let dist2 = delta.len_sq();
@@ -1940,8 +1996,13 @@ impl Engine {
                     let (dirx, diry, overlap) = if dist.0 > 0 {
                         (delta.x.div(dist), delta.y.div(dist), mind - dist)
                     } else {
-                        // exactly coincident: nudge along +y deterministically
-                        (Fx(0), Fx::from_int(1), mind)
+                        // exactly coincident (e.g. a Witch's skeletons spawned on one
+                        // point): split along y, deterministically. [seat] The axis is
+                        // oriented by `a`'s owner rather than fixed to +y, so the split
+                        // is the mirror image for the other seat instead of always
+                        // shoving the later body toward player 1's side.
+                        let sy = if owner[a] == 0 { 1 } else { -1 };
+                        (Fx(0), Fx::from_int(sy), mind)
                     };
                     if immov[a] {
                         disp[b] = disp[b].add(V2::new(dirx.mul(overlap), diry.mul(overlap)));
@@ -2034,9 +2095,7 @@ impl Engine {
             if !d.targets.can_hit(snap.flying[j]) {
                 continue;
             }
-            let dx = snap.x[j] - center.x;
-            let dy = snap.y[j] - center.y;
-            if dx.mul(dx) + dy.mul(dy) <= r2 {
+            if snap.in_splash(center, j, r, r2) {
                 dmg[j] += scaled_tower(amount, 100, snap.is_tower[j]);
             }
         }
@@ -2074,9 +2133,7 @@ impl Engine {
             if !d.targets.can_hit(snap.flying[j]) {
                 continue;
             }
-            let dx = snap.x[j] - center.x;
-            let dy = snap.y[j] - center.y;
-            if dx.mul(dx) + dy.mul(dy) <= r2 {
+            if snap.in_splash(center, j, d.splash, r2) {
                 hit(j);
             }
         }
@@ -2101,9 +2158,7 @@ impl Engine {
             if !d.targets.can_hit(snap.flying[j]) {
                 continue;
             }
-            let dx = snap.x[j] - center.x;
-            let dy = snap.y[j] - center.y;
-            if dx.mul(dx) + dy.mul(dy) <= r2 {
+            if snap.in_splash(center, j, r, r2) {
                 stun_add[j] = stun_add[j].max(d.stun_ticks);
             }
         }
@@ -2140,9 +2195,7 @@ impl Engine {
                     if p.hit_ids.contains(&jid) {
                         continue;
                     }
-                    let dx = snap.x[j] - p.pos.x;
-                    let dy = snap.y[j] - p.pos.y;
-                    if dx.mul(dx) + dy.mul(dy) > r2 {
+                    if !snap.in_splash(p.pos, j, p.splash, r2) {
                         continue;
                     }
                     dmg[j] += scaled_tower(p.damage, p.crown_pct, snap.is_tower[j]);
@@ -2363,7 +2416,7 @@ impl Engine {
             if !is_tower && !revived {
                 if let Some(did) = d.death_id {
                     for k in 0..d.death_count.max(1) {
-                        let off = Self::spawn_offset(k, d.death_count.max(1));
+                        let off = Self::spawn_offset_for(owner_u8, k, d.death_count.max(1));
                         death_spawns.push((owner_u8, did, V2::new(pos.x + off.x, pos.y + off.y)));
                     }
                 }
@@ -2545,6 +2598,39 @@ impl Engine {
     }
 }
 
+/// [seat] Whether entity `e` is inside the circle (`center`, `r`; `r2` = r^2). Circle
+/// bodies use their centre; box hitboxes (towers) count as soon as the circle reaches
+/// the box surface -- same rule as `Snap::in_splash`, for code that walks `entities`.
+#[inline]
+fn ent_in_radius(e: &Entity, center: V2, r: Fx, r2: Fx) -> bool {
+    if e.half.x.0 > 0 || e.half.y.0 > 0 {
+        let ex = ((center.x - e.pos.x).abs() - e.half.x).max(Fx(0));
+        let ey = ((center.y - e.pos.y).abs() - e.half.y).max(Fx(0));
+        ex.mul(ex) + ey.mul(ey) <= r.mul(r)
+    } else {
+        let dx = e.pos.x - center.x;
+        let dy = e.pos.y - center.y;
+        dx.mul(dx) + dy.mul(dy) <= r2
+    }
+}
+
+/// [seat] Geometric tie-break key for choosing between candidates that are otherwise
+/// equal (same distance / same HP), as seen by `owner` from the point `from`. Lower
+/// sorts first. Entity ids used to decide these ties, which handed them to whoever
+/// was created first -- i.e. to the seat whose deploy was applied first. The key is
+/// built only from quantities that are identical for a position and its mirror image:
+///   1. least sideways offset from `from`          (most directly in line),
+///   2. furthest toward the enemy side of `from`   (in front beats behind),
+///   3. nearest the arena's centre column,
+/// so both seats, and both lanes, break the same tie the same way. Only a perfectly
+/// left/right-symmetric tie reaches 4. (the lower x, a fixed arbitrary convention that
+/// is the same for both seats) and only indistinguishable bodies reach 5. (the id).
+#[inline]
+fn tie_key(from: V2, owner: u8, x: Fx, y: Fx, id: u32) -> (i64, i64, i64, i64, u32) {
+    let ahead = if owner == 0 { y.0 - from.y.0 } else { from.y.0 - y.0 };
+    ((x.0 - from.x.0).abs(), -ahead, (x.0 - WIDTH.0 / 2).abs(), x.0, id)
+}
+
 /// [M2] Whether a card's ranged attack homes (tracks the target entity) vs. commits
 /// to a fixed ground point (dodgeable). An explicit per-card `homing` flag (the real
 /// CR `Homing` projectile field) wins; otherwise the default is: single-target
@@ -2637,9 +2723,11 @@ fn proj_impact(
                 best = Some(match best {
                     None => j,
                     Some(b) => {
-                        // highest HP wins; ties broken by lowest entity id (deterministic)
+                        // highest HP wins; ties broken by the seat-neutral geometric key
                         if snap.hp[j] > snap.hp[b]
-                            || (snap.hp[j] == snap.hp[b] && snap.id[j] < snap.id[b])
+                            || (snap.hp[j] == snap.hp[b]
+                                && tie_key(tpos, p.owner, snap.x[j], snap.y[j], snap.id[j])
+                                    < tie_key(tpos, p.owner, snap.x[b], snap.y[b], snap.id[b]))
                         {
                             j
                         } else {
@@ -2674,7 +2762,8 @@ fn proj_impact(
             }
             let dx = snap.x[j] - tpos.x;
             let dy = snap.y[j] - tpos.y;
-            if dx.mul(dx) + dy.mul(dy) <= r2 {
+            // [seat] towers are caught when the blast reaches their hitbox, not centre
+            if snap.in_splash(tpos, j, p.splash, r2) {
                 dmg[j] += scaled_tower(p.damage, p.crown_pct, snap.is_tower[j]);
                 if p.stun_ticks > 0 {
                     stun_add[j] = stun_add[j].max(p.stun_ticks);
@@ -2758,8 +2847,12 @@ fn proj_impact(
                 best = Some(match best {
                     None => (j, d2),
                     Some((bj, bd)) => {
-                        // nearest wins; ties broken by lowest entity id (deterministic)
-                        if d2 < bd || (d2 == bd && snap.id[j] < snap.id[bj]) {
+                        // nearest wins; ties broken by the seat-neutral geometric key
+                        if d2 < bd
+                            || (d2 == bd
+                                && tie_key(arc, p.owner, snap.x[j], snap.y[j], snap.id[j])
+                                    < tie_key(arc, p.owner, snap.x[bj], snap.y[bj], snap.id[bj]))
+                        {
                             (j, d2)
                         } else {
                             (bj, bd)
@@ -2887,7 +2980,7 @@ fn path_goal(
         if field[grid.idx(cx, cy)] == 0 {
             break;
         }
-        match grid.best_neighbor(field, cx, cy, jumps) {
+        match grid.best_neighbor(field, cx, cy, jumps, tpos) {
             Some((nx, ny)) if field[grid.idx(nx, ny)] < field[grid.idx(cx, cy)] => {
                 tiles.push((nx, ny));
                 cx = nx;
@@ -2975,12 +3068,30 @@ impl PathGrid {
         (cy * COLS + cx) as usize
     }
 
+    /// Tile containing `p`. [seat] Rows are assigned mirror-consistently about the
+    /// river centre line: a point exactly on a row boundary belongs to the row
+    /// nearer the centre in BOTH halves (`[a, a+1)` below the line, `(a, a+1]` above),
+    /// so `tile_of(mirror(p))` is always the mirror of `tile_of(p)`. A plain floor is
+    /// half-open the same way everywhere, which is not reflection-symmetric: player
+    /// 1's tower face (y=24.0) fell in the tower's own blocked row while player 0's
+    /// (y=8.0) fell in the open row in front of it, and a unit standing on y=15.0 was
+    /// "in the river" while its mirror image on y=17.0 was not -- so the two seats
+    /// got different routes (straight line vs flow field) from mirrored positions.
     #[inline]
     fn tile_of(p: V2) -> (i64, i64) {
-        (
-            p.x.to_int_floor().clamp(0, COLS - 1),
-            p.y.to_int_floor().clamp(0, ROWS - 1),
-        )
+        let row = if p.y < RIVER_Y {
+            p.y.to_int_floor()
+        } else {
+            ROWS - 1 - mirror_y(p.y).to_int_floor()
+        };
+        // Columns likewise, about the arena's centre column, so the left and right
+        // lanes are exact mirror images of each other as well.
+        let col = if p.x < WIDTH.divi(2) {
+            p.x.to_int_floor()
+        } else {
+            COLS - 1 - (WIDTH - p.x).to_int_floor()
+        };
+        (col.clamp(0, COLS - 1), row.clamp(0, ROWS - 1))
     }
 
     #[inline]
@@ -3080,9 +3191,25 @@ impl PathGrid {
         dist
     }
 
-    /// Passable, corner-safe neighbour of `(cx,cy)` with the lowest field value
-    /// (ties broken by the fixed NEIGHBORS order for determinism).
-    fn best_neighbor(&self, dist: &[u16], cx: i64, cy: i64, jumps: bool) -> Option<(i64, i64)> {
+    /// Passable, corner-safe neighbour of `(cx,cy)` with the lowest field value.
+    /// [seat] Equal field values break toward the tile nearest the target point
+    /// `toward`, then nearest the arena's centre column, then nearest the river --
+    /// all mirror-invariant -- and only then by the fixed NEIGHBORS order. Breaking
+    /// ties by NEIGHBORS order alone always preferred -y and -x, i.e. one seat's
+    /// "forward" and one particular lane.
+    fn best_neighbor(
+        &self,
+        dist: &[u16],
+        cx: i64,
+        cy: i64,
+        jumps: bool,
+        toward: V2,
+    ) -> Option<(i64, i64)> {
+        let key = |nx: i64, ny: i64| -> (i64, i64, i64) {
+            let c = self.tile_center(nx, ny);
+            let d = c.sub(toward);
+            (d.len_sq().0, (c.x.0 - WIDTH.0 / 2).abs(), (c.y.0 - RIVER_Y.0).abs())
+        };
         let mut best: Option<((i64, i64), u16)> = None;
         for &(dx, dy) in &NEIGHBORS {
             let nx = cx + dx;
@@ -3100,7 +3227,7 @@ impl PathGrid {
             if dv == u16::MAX {
                 continue;
             }
-            if best.map_or(true, |(_, bv)| dv < bv) {
+            if best.map_or(true, |((bx, by), bv)| dv < bv || (dv == bv && key(nx, ny) < key(bx, by))) {
                 best = Some(((nx, ny), dv));
             }
         }
@@ -3182,6 +3309,22 @@ impl Snap {
             (ex.mul(ex) + ey.mul(ey)).sqrt()
         } else {
             (V2::new(p.x - cx, p.y - cy)).len() - self.rad[j]
+        }
+    }
+
+    /// [seat] Whether entity `j` is caught by a melee splash of radius `r` (`r2` = r^2)
+    /// centred on `center`. Circles keep the centre-distance test; box hitboxes
+    /// (towers) are measured to the box SURFACE, since a princess tower's centre sits
+    /// 1.5 tiles behind its face and a unit hitting the face off-centre would
+    /// otherwise splash nothing at all -- not even the tower it is attacking.
+    #[inline]
+    fn in_splash(&self, center: V2, j: usize, r: Fx, r2: Fx) -> bool {
+        if self.hx[j].0 > 0 || self.hy[j].0 > 0 {
+            self.surf_dist(center, j) <= r
+        } else {
+            let dx = self.x[j] - center.x;
+            let dy = self.y[j] - center.y;
+            dx.mul(dx) + dy.mul(dy) <= r2
         }
     }
 
@@ -4630,5 +4773,278 @@ mod r2_goblinstein_tests {
             v
         };
         assert_eq!(run(), run(), "Goblinstein pairing must replay identically");
+    }
+}
+
+// [seat] Seat-neutrality guard. The arena is a y-reflection of itself, so a
+// scenario and its reflection with the owners exchanged must play out as exact
+// mirror images: neither seat may get a different result from the same position.
+// These failed before the [seat] fixes (LOS end-tile test, floor-rounding `mul`,
+// unmirrored spawn formations, centre-distance melee splash vs towers).
+#[cfg(test)]
+mod seat_tests {
+    use super::*;
+    use crate::cards::Library;
+    use crate::fixed::{Fx, V2};
+
+    const SPOTS: [(f64, f64); 6] =
+        [(3.5, 10.5), (9.0, 10.5), (5.5, 12.5), (14.5, 8.5), (8.5, 13.5), (1.5, 6.5)];
+
+    fn troops(lib: &Library) -> Vec<usize> {
+        lib.deployable.iter().copied().filter(|&d| lib.defs[d].ctype == CardType::Troop).collect()
+    }
+    /// Spawn point for `owner`: `(x, y)` as given for player 0, y-reflected for player 1.
+    fn seat_pos(owner: u8, x: f64, y: f64) -> V2 {
+        let p = V2::new(Fx::from_f64(x), Fx::from_f64(y));
+        if owner == 0 { p } else { V2::new(p.x, mirror_y(p.y)) }
+    }
+    /// Live entities as (owner, def, x, y, hp), sorted. `mirrored` exchanges the
+    /// owners and reflects y, i.e. views the board from the other seat.
+    fn board(eng: &Engine, mirrored: bool) -> Vec<(u8, usize, i64, i64, i32)> {
+        let mut v: Vec<_> = eng
+            .entities
+            .iter()
+            .filter(|e| !e.dead)
+            .map(|e| {
+                if mirrored {
+                    (1 - e.owner, e.def, e.pos.x.0, mirror_y(e.pos.y).0, e.hp)
+                } else {
+                    (e.owner, e.def, e.pos.x.0, e.pos.y.0, e.hp)
+                }
+            })
+            .collect();
+        v.sort();
+        v
+    }
+    fn noop() -> [Action; 2] {
+        [Action::noop(), Action::noop()]
+    }
+
+    /// A lone unit pushing from either seat produces the mirror-image match.
+    #[test]
+    fn lone_push_is_identical_from_either_seat() {
+        let lib = Library::default_lib();
+        let mut bad: Vec<String> = Vec::new();
+        for &c in &troops(&lib) {
+            for &(x, y) in &SPOTS {
+                let mut engs: Vec<Engine> = (0..2u8)
+                    .map(|owner| {
+                        let mut eng = Engine::new(Library::default_lib());
+                        eng.reset(1, None);
+                        eng.spawn_unit(owner, c, seat_pos(owner, x, y));
+                        eng
+                    })
+                    .collect();
+                for t in 0..2400 {
+                    engs[0].step(noop());
+                    engs[1].step(noop());
+                    if board(&engs[0], false) != board(&engs[1], true) {
+                        bad.push(format!("{}@({x},{y}) diverged at tick {t}", lib.defs[c].name));
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "seat-dependent lone pushes ({}): {:#?}", bad.len(), bad);
+    }
+
+    /// The same card from both seats at mirrored spots stays a mirror image of
+    /// itself all match long, whichever seat's unit was created first.
+    #[test]
+    fn mirror_duel_stays_symmetric() {
+        let lib = Library::default_lib();
+        let mut bad: Vec<String> = Vec::new();
+        for &c in &troops(&lib) {
+            for &(x, y) in &SPOTS {
+                for first in 0..2u8 {
+                    let mut eng = Engine::new(Library::default_lib());
+                    eng.reset(1, None);
+                    for owner in [first, 1 - first] {
+                        eng.spawn_unit(owner, c, seat_pos(owner, x, y));
+                    }
+                    for t in 0..3000 {
+                        eng.step(noop());
+                        if board(&eng, false) != board(&eng, true) {
+                            bad.push(format!(
+                                "{}@({x},{y}) first={first} diverged at tick {t}",
+                                lib.defs[c].name
+                            ));
+                            break;
+                        }
+                        if eng.outcome != Outcome::Running {
+                            break;
+                        }
+                    }
+                    assert_ne!(eng.outcome, Outcome::Win0, "{} mirror duel won by seat 0", lib.defs[c].name);
+                    assert_ne!(eng.outcome, Outcome::Win1, "{} mirror duel won by seat 1", lib.defs[c].name);
+                }
+            }
+        }
+        assert!(bad.is_empty(), "asymmetric mirror duels ({}): {:#?}", bad.len(), bad);
+    }
+
+    /// A scripted multi-unit battle: (tick, owner, card, x, y) spawns from a small LCG.
+    fn random_battle(lib: &Library, seed: u64) -> Vec<(i64, u8, usize, V2)> {
+        let cards = troops(lib);
+        let mut st = seed.wrapping_mul(7919).wrapping_add(13);
+        let mut next = |m: u64| {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (st >> 33) % m
+        };
+        (0..24u64)
+            .map(|k| {
+                let tick = (k / 2) as i64 * 100 + next(3) as i64 * 20;
+                let owner = (k % 2) as u8;
+                let def = cards[next(cards.len() as u64) as usize];
+                let x = next(18) as f64 + 0.5;
+                let y = next(14) as f64 + 0.5;
+                (tick, owner, def, seat_pos(owner, x, y))
+            })
+            .collect()
+    }
+    fn play(script: &[(i64, u8, usize, V2)], ticks: i64) -> Vec<Vec<(u8, usize, i64, i64, i32)>> {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None);
+        let mut out = Vec::new();
+        for t in 0..ticks {
+            for s in script.iter().filter(|s| s.0 == t) {
+                eng.spawn_unit(s.1, s.2, s.3);
+            }
+            eng.step(noop());
+            out.push(board(&eng, false));
+            if eng.outcome != Outcome::Running {
+                break;
+            }
+        }
+        out
+    }
+    /// Mirror a recorded board: `swap` exchanges owners, `fy`/`fx` reflect the axes.
+    fn reflect(b: &[(u8, usize, i64, i64, i32)], swap: bool, fy: bool, fx: bool) -> Vec<(u8, usize, i64, i64, i32)> {
+        let mut v: Vec<_> = b
+            .iter()
+            .map(|&(o, d, x, y, hp)| {
+                (
+                    if swap { 1 - o } else { o },
+                    d,
+                    if fx { WIDTH.0 - x } else { x },
+                    if fy { HEIGHT.0 - y } else { y },
+                    hp,
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Whole multi-unit battles: exchanging the seats (y-reflection, and also the
+    /// 180-degree rotation) and flipping the lanes each give the exact mirror-image
+    /// match, tick for tick, with the units created in either order.
+    #[test]
+    fn random_battles_mirror_exactly() {
+        let lib = Library::default_lib();
+        // (label, swap owners, reflect y, reflect x)
+        let maps = [("seat swap", true, true, false), ("rotation", true, true, true), ("lane flip", false, false, true)];
+        for seed in 0..40u64 {
+            let script = random_battle(&lib, seed);
+            let base = play(&script, 2400);
+            for &(label, swap, fy, fx) in &maps {
+                for reorder in [false, true] {
+                    let mut other: Vec<_> = script
+                        .iter()
+                        .map(|&(t, o, d, p)| {
+                            let x = if fx { WIDTH - p.x } else { p.x };
+                            let y = if fy { mirror_y(p.y) } else { p.y };
+                            (t, if swap { 1 - o } else { o }, d, V2::new(x, y))
+                        })
+                        .collect();
+                    if reorder {
+                        other.reverse(); // same-tick spawns now created in the opposite order
+                    }
+                    let got = play(&other, 2400);
+                    assert_eq!(base.len(), got.len(), "{label} seed {seed}: match length differs");
+                    for (t, (a, b)) in base.iter().zip(got.iter()).enumerate() {
+                        assert!(
+                            *a == reflect(b, swap, fy, fx),
+                            "{label} (reorder={reorder}) seed {seed}: diverged at tick {t}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Target ties are decided by geometry, never by which unit was created first.
+    #[test]
+    fn target_tie_ignores_creation_order() {
+        let lib = Library::default_lib();
+        let knight = lib.id_of("knight").unwrap();
+        let p = |x: f64, y: f64| V2::new(Fx::from_f64(x), Fx::from_f64(y));
+        for owner in 0..2u8 {
+            for flip in [false, true] {
+                let mut eng = Engine::new(Library::default_lib());
+                eng.reset(1, None);
+                let y = |v: f64| if owner == 0 { v } else { 32.0 - v };
+                eng.spawn_unit(owner, knight, p(6.0, y(8.0)));
+                let me = eng.entities.last().unwrap().id;
+                // two enemies equidistant from the knight: one nearer the centre column
+                let spots = if flip { [(7.0, 11.0), (5.0, 11.0)] } else { [(5.0, 11.0), (7.0, 11.0)] };
+                let mut ids = Vec::new();
+                for (x, yy) in spots {
+                    eng.spawn_unit(1 - owner, knight, p(x, y(yy)));
+                    ids.push((x, eng.entities.last().unwrap().id));
+                }
+                for e in eng.entities.iter_mut() {
+                    e.deploy = 0;
+                }
+                eng.step(noop());
+                let tgt = eng.entities.iter().find(|e| e.id == me).unwrap().target;
+                let want = ids.iter().find(|(x, _)| *x == 7.0).unwrap().1;
+                assert_eq!(tgt, Some(want), "owner {owner} flip {flip}: tie must go to the centre-side enemy");
+            }
+        }
+    }
+
+    /// Both seats deploying the same card on the same tick, at mirrored tiles, stay a
+    /// mirror image whether that tick resolves player 0 or player 1 first.
+    #[test]
+    fn same_tick_deploys_are_symmetric() {
+        for start in [0, 1] {
+            let mut eng = Engine::new(Library::default_lib());
+            let deck = eng.default_deck();
+            eng.reset(1, Some([deck.clone(), deck]));
+            eng.queue[1] = eng.queue[0].clone(); // same hand order for both seats
+            for _ in 0..start {
+                eng.step(noop());
+            }
+            let mut fielded = [false; 2];
+            for t in 0..1500 {
+                for e in eng.entities.iter().filter(|e| !e.is_tower) {
+                    fielded[e.owner as usize] = true;
+                }
+                let acts = if t % 150 == 0 {
+                    let a = |y: f64| Action { slot: 0, x: Fx::from_f64(5.5), y: Fx::from_f64(y) };
+                    [a(9.5), a(22.5)]
+                } else {
+                    noop()
+                };
+                eng.step(acts);
+                assert!(board(&eng, false) == board(&eng, true), "start {start}: asymmetric at tick {t}");
+                assert_eq!(eng.elixir[0].0, eng.elixir[1].0);
+                if eng.outcome != Outcome::Running {
+                    break;
+                }
+            }
+            assert_eq!(fielded, [true, true], "start {start}: both seats must actually deploy");
+        }
+    }
+
+    /// Fixed-point multiply is sign-symmetric, so mirrored motion is exact.
+    #[test]
+    fn mul_is_sign_symmetric() {
+        for &(a, b) in &[(0.05, 0.7071), (1.35, 0.0333), (2.5, 0.65), (0.0001, 3.3)] {
+            let (a, b) = (Fx::from_f64(a), Fx::from_f64(b));
+            assert_eq!((Fx(0) - a).mul(b).0, -a.mul(b).0);
+            assert_eq!(a.mul(Fx(0) - b).0, -a.mul(b).0);
+        }
     }
 }
