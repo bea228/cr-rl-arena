@@ -1924,10 +1924,20 @@ impl Engine {
                 if valid(tj) {
                     let gap = snap.surf_dist(ipos, tj);
                     let building = snap.is_tower[tj] || snap.is_building[tj];
-                    let keep_forever = d.buildings_only && building;
-                    let leash = d.sight.max(d.range);
                     let prefer_rescan = d.prefers_buildings && !building;
-                    if (keep_forever || gap <= leash) && !prefer_rescan {
+                    // A building-targeter (Hog/Giant/Golem) tracks the NEAREST building:
+                    // buildings are static, so it re-acquires each tick and a closer one --
+                    // a placed Cannon/Tombstone -- pulls it off its tower path, UNLESS it is
+                    // already in attack range of its current building, in which case it commits
+                    // to finishing that off (so it does not jitter off a building it is hitting).
+                    // Every other unit holds its committed target while the target stays inside
+                    // the unit's own aggro radius (its sight, or attack range for long shooters).
+                    let hold = if d.buildings_only && building {
+                        gap <= d.range
+                    } else {
+                        gap <= d.sight.max(d.range)
+                    };
+                    if hold && !prefer_rescan {
                         return Some(tj);
                     }
                 }
@@ -4444,6 +4454,56 @@ mod aggro_tests {
         pin(&mut eng, e2, at(10.0, 11.0));
         eng.step(noop());
         assert_eq!(target_of(&eng, aid), Some(e1), "equidistant tie resolves to the lower id");
+    }
+
+    // Building-pull: a building-targeter (Giant) marching on a tower is pulled off by a
+    // closer enemy building (a placed Cannon), but never by a troop. This is the classic
+    // Cannon/Tombstone pull -- it was broken before because the first building target was
+    // held forever.
+    #[test]
+    fn building_targeter_is_pulled_by_a_closer_building_not_a_troop() {
+        let mut eng = Engine::new(Library::default_lib());
+        let giant = eng.lib.id_of("giant").unwrap();
+        assert!(eng.lib.defs[giant].buildings_only, "giant targets buildings only");
+        let cannon = eng.lib.id_of("cannon").unwrap();
+        let knight = eng.lib.id_of("knight").unwrap();
+        eng.spawn_unit(0, giant, at(9.0, 8.0));
+        let gid = eng.entities.last().unwrap().id;
+        // a far enemy building: the giant marches on it (no towers in a bare Engine::new)
+        eng.spawn_unit(1, cannon, at(9.0, 20.0));
+        let far = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, gid, at(9.0, 8.0));
+        pin(&mut eng, far, at(9.0, 20.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, gid), Some(far), "giant marches on the only enemy building");
+
+        // a closer enemy building pulls the giant off it (the Cannon/Tombstone pull)
+        eng.spawn_unit(1, cannon, at(9.0, 11.0));
+        let near = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, gid, at(9.0, 8.0));
+        pin(&mut eng, far, at(9.0, 20.0));
+        pin(&mut eng, near, at(9.0, 11.0));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, gid), Some(near), "a closer building pulls the building-targeter");
+
+        // a troop even closer must NOT steal it -- building-targeters ignore troops
+        eng.spawn_unit(1, knight, at(9.0, 9.5));
+        let kid = eng.entities.last().unwrap().id;
+        for e in eng.entities.iter_mut() {
+            e.deploy = 0;
+        }
+        pin(&mut eng, gid, at(9.0, 8.0));
+        pin(&mut eng, far, at(9.0, 20.0));
+        pin(&mut eng, near, at(9.0, 11.0));
+        pin(&mut eng, kid, at(9.0, 9.5));
+        eng.step(noop());
+        assert_eq!(target_of(&eng, gid), Some(near), "a troop never pulls a building-targeter");
     }
 }
 
