@@ -1,4 +1,4 @@
-# Competition ladder server (cr-arena) with the simulator it runs.
+# Tournament server (cr-arena) with the simulator it runs.
 #
 # Built from the repo root so the server and the Rust simulator in gym/ always
 # come from the same commit. Deploy target: Railway (or any Docker host).
@@ -9,8 +9,7 @@
 # Runtime settings (all optional):
 #   PORT               port to listen on (Railway sets this; default 8765)
 #   CR_ARENA_DATA      ratings + replays directory (default /data -- mount a volume here)
-#   CR_MOVE_TIMEOUT    seconds an agent has to answer each decision (default 1.0)
-#   CR_DECISION_EVERY  ticks between decisions (default 4)
+#   CR_MOVE_TIMEOUT    seconds an agent has to answer each tick (default 2.0)
 
 # ---- stage 1: compile the Rust simulator into a Python wheel ----
 FROM python:3.12-slim AS build

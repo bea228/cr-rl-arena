@@ -1,12 +1,12 @@
-"""Competition server: a continuous Elo ladder over the cr_sim engine.
+"""Tournament server: continuous matches between agents, ranked by Elo.
 
 Agents connect over WebSocket, join the queue, and are paired for
 server-authoritative matches. The server owns the only real `cr_sim.Battle`;
 agents just answer observations with actions. Results update a persistent Elo
 leaderboard, and each match's (seed, action-log) is saved so it can be replayed.
 
-The same port also serves a web page: the live ladder at `/` and a replay viewer
-for any saved match (see `web.py`).
+The same port also serves a web page: the live standings at `/` and a replay
+viewer for any saved match (see `web.py`).
 
 Run:
     pip install cr-sim websockets        # cr-sim = the gym package
@@ -14,19 +14,32 @@ Run:
 Env:
     CR_ARENA_BIND        host:port         (default 0.0.0.0:8765)
     CR_ARENA_DATA        data dir          (default ./arena_data)
-    CR_MOVE_TIMEOUT      seconds/decision  (default 1.0)
-    CR_DECISION_EVERY    ticks/decision    (default 4 => 5 Hz; core tick stays 20 Hz)
+    CR_MOVE_TIMEOUT      seconds an agent has to answer each tick (default 2.0)
 
 Protocol (JSON text frames)
   C->S  {"t":"join","name":str,"deck":[8 card names]}   (deck required; an
         illegal deck is refused with {"t":"error","msg":...} and the socket closed)
         {"t":"leaderboard"}                      (query then close)
   S->C  {"t":"joined","name","rating"}
-        {"t":"start","player":0|1,"opponent","seed"}
-        {"t":"obs","obs":{...}}                   (reply required)
-  C->S  {"t":"act","action":[slot,x,y]|null}
-  S->C  {"t":"result","you":0|1,"outcome","crowns","rating","delta"}
+        {"t":"start","opponent"}
+        {"t":"obs","obs":{...}}                   (every tick; reply required)
+  C->S  {"t":"act","tick":obs.tick,"action":[slot,x,y]|null}
+  S->C  {"t":"result","result":"win"|"loss"|"draw","crowns":[mine,theirs],
+         "rating","delta","match","seed"}
+        {"t":"aborted","reason"}                  (match void: the opponent stopped answering)
         {"t":"leaderboard","standings":[...]}
+
+Every agent plays as the bottom player: `obs` and `action` are in the agent's own
+seat frame (see cr_sim), so an agent is never told, and never needs, its seat. The
+seed is only sent with the result: before the match it would let an agent work out
+the opponent's hand order.
+
+Turns. An agent is asked for a move on every tick and has CR_MOVE_TIMEOUT seconds
+to answer. Its reply must carry the `tick` it answers, so a reply that arrives late
+is recognised and dropped instead of being taken for the next tick's move. No
+answer in time means no move for that agent on that tick. An agent that lets
+`match.MAX_MISSED_TURNS` turns in a row go by is disconnected, and that match is
+closed without being recorded.
 """
 from __future__ import annotations
 
@@ -40,13 +53,13 @@ import cr_sim
 import websockets
 
 from . import match
-from .ladder import UPSET_GAP, MatchLog
+from .matchlog import UPSET_GAP, MatchLog
 from .leaderboard import Leaderboard
 from .web import Web
 
 BIND = os.environ.get("CR_ARENA_BIND", "0.0.0.0:8765")
 DATA_DIR = os.environ.get("CR_ARENA_DATA", "./arena_data")
-MOVE_TIMEOUT = float(os.environ.get("CR_MOVE_TIMEOUT", "1.0"))
+MOVE_TIMEOUT = float(os.environ.get("CR_MOVE_TIMEOUT", "2.0"))
 
 
 class WsAgent:
@@ -65,17 +78,50 @@ class WsAgent:
             self.alive = False
 
     async def act(self, obs, timeout):
+        """Send the observation for this tick and wait for the reply to it.
+
+        Returns (action, problem): problem is None for a usable reply, "missed"
+        if none came in time, "malformed" if it could not be read. Replies tagged
+        with any other tick are leftovers from a turn this agent already missed;
+        they are dropped and the wait goes on, so an agent can never slip a step
+        behind.
+        """
+        tick = obs["tick"]
+        loop = asyncio.get_running_loop()
         try:
             await self.ws.send(json.dumps({"t": "obs", "obs": obs}))
-            raw = await asyncio.wait_for(self.ws.recv(), timeout)
-            msg = json.loads(raw)
-            if msg.get("t") == "act":
-                return msg.get("action")
+            deadline = loop.time() + timeout
+            while True:
+                left = deadline - loop.time()
+                if left <= 0:
+                    return None, "missed"
+                raw = await asyncio.wait_for(self.ws.recv(), left)
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    return None, "malformed"
+                if not isinstance(msg, dict) or msg.get("t") != "act":
+                    return None, "malformed"
+                at = msg.get("tick")
+                if not isinstance(at, int) or isinstance(at, bool):
+                    return None, "malformed"      # every reply must say which tick it answers
+                if at != tick:
+                    continue                      # a late answer to another tick
+                return msg.get("action"), None
         except websockets.ConnectionClosed:
             self.alive = False
-        except (asyncio.TimeoutError, json.JSONDecodeError, ValueError):
-            pass  # slow/garbled reply -> treat this decision as a no-op
-        return None
+            return None, None
+        except asyncio.TimeoutError:
+            return None, "missed"
+
+    async def drop(self, why):
+        """Tell the agent why it is being removed, then close its connection."""
+        await self.send({"t": "error", "msg": why})
+        self.alive = False
+        try:
+            await self.ws.close()
+        except Exception:
+            pass
 
 
 class Arena:
@@ -126,7 +172,7 @@ class Arena:
             else:
                 self.online.pop(name, None)
 
-    def ladder_snapshot(self) -> dict:
+    def standings_snapshot(self) -> dict:
         """Data for the web page: standings, recent results, live counts."""
         return self.log.snapshot(self.board.standings(), set(self.online), self.live)
 
@@ -163,13 +209,23 @@ class Arena:
         self.live += 1
         try:
             seed = random.getrandbits(63)
-            await a.send({"t": "start", "player": 0, "opponent": b.name, "seed": seed})
-            await b.send({"t": "start", "player": 1, "opponent": a.name, "seed": seed})
+            await a.send({"t": "start", "opponent": b.name})
+            await b.send({"t": "start", "opponent": a.name})
 
-            res = await match.run_match(
-                cr_sim, a, b, seed=seed,
-                move_timeout=MOVE_TIMEOUT, decision_every=match.DECISION_EVERY,
-            )
+            res = await match.run_match(cr_sim, a, b, seed=seed, move_timeout=MOVE_TIMEOUT)
+            if res.get("aborted") is not None:
+                # One or both agents stopped answering. The match is void: no rating
+                # change, no result, no replay. The silent agent is disconnected so
+                # it cannot stall the next opponent too; the other goes back in the queue.
+                gone = [(a, b)[i] for i in res["aborted"]]
+                for ag in (a, b):
+                    if ag in gone:
+                        await ag.drop(f"removed: no reply to {match.MAX_MISSED_TURNS} turns in a row")
+                    else:
+                        await ag.send({"t": "aborted", "reason": "opponent stopped responding"})
+                print(f"[match void] {a.name} vs {b.name}: "
+                      f"{', '.join(g.name for g in gone)} stopped responding at tick {res['ticks']}")
+                return
             out = res["outcome"]
             # forfeit: a disconnected agent loses to a connected one
             forfeit = False
@@ -181,15 +237,18 @@ class Arena:
             score_a = 1.0 if out == 1 else 0.0 if out == 2 else 0.5
             before = (self.board.get(a.name).rating, self.board.get(b.name).rating)
             delta = self.board.report(a.name, b.name, score_a)
-            self._record(a, b, res, out, forfeit, delta, before)
+            mid = self._record(a, b, res, out, forfeit, delta, before)
 
-            await a.send({"t": "result", "you": 0, "outcome": out, "crowns": res["crowns"],
-                          "rating": round(self.board.get(a.name).rating, 1), "delta": round(delta, 1)})
-            await b.send({"t": "result", "you": 1, "outcome": out, "crowns": res["crowns"],
-                          "rating": round(self.board.get(b.name).rating, 1), "delta": round(-delta, 1)})
+            # each agent hears the result from its own side, never as a seat number
+            c = res["crowns"]
+            for ag, won, mine, d in ((a, 1, c, delta), (b, 2, c[::-1], -delta)):
+                await ag.send({"t": "result",
+                               "result": "win" if out == won else "loss" if out in (1, 2) else "draw",
+                               "crowns": mine, "rating": round(self.board.get(ag.name).rating, 1),
+                               "delta": round(d, 1), "match": mid, "seed": seed})
             print(f"[match] {a.name} vs {b.name} -> {['--','P0','P1','draw'][out]} "
                   f"{res['crowns']} in {res['ticks']} ticks")
-        except Exception as e:  # never let one match kill the ladder
+        except Exception as e:  # never let one match kill the server
             print(f"[match error] {a.name} vs {b.name}: {e!r}")
         finally:
             self.live -= 1
@@ -200,7 +259,7 @@ class Arena:
     def _record(self, a, b, res, out, forfeit, delta, before):
         """Save the replay file and append the match to the log the web page reads.
 
-        `outcome` is the result that counted for the ladder; `sim_outcome` is what
+        `outcome` is the result that counted for the ratings; `sim_outcome` is what
         the simulator itself produced. They differ only for a forfeit, and the
         replay viewer checks a re-run against `sim_outcome`.
         """
@@ -226,10 +285,12 @@ class Arena:
                 "delta": round(delta, 1), "r0": r0, "r1": r1,
                 "upset": out in (1, 2) and not forfeit and winner_before < loser_before - UPSET_GAP,
                 "forfeit": forfeit, "deck0": a.deck, "deck1": b.deck,
+                "moves": res.get("moves"), "ignored": res.get("ignored"),
                 "file": fname if saved else None,
             })
         except OSError:
             pass
+        return mid
 
 
 async def main():

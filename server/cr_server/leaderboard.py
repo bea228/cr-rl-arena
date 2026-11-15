@@ -41,7 +41,7 @@ class Leaderboard:
                 for r in raw.get("records", []):
                     self.records[r["name"]] = Record(**r)
             except (json.JSONDecodeError, TypeError, KeyError):
-                pass  # start fresh on a corrupt file rather than crash the ladder
+                pass  # start fresh on a corrupt file rather than crash the server
 
     def _save(self):
         data = {"records": [asdict(r) for r in self.records.values()]}

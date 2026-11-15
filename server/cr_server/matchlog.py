@@ -1,4 +1,4 @@
-"""Match log and the public ladder snapshot shown on the web page.
+"""Match log and the public standings snapshot shown on the web page.
 
 The leaderboard file holds each agent's current rating and W/L/D. The page also
 needs things that file can't answer: who played whom recently, how a rating
@@ -25,7 +25,8 @@ UPSET_GAP = 60.0    # a win by the side rated this much lower counts as an upset
 
 
 class _Agent:
-    __slots__ = ("history", "results", "recent", "peak", "last_delta", "deck", "games")
+    __slots__ = ("history", "results", "recent", "peak", "last_delta", "deck", "games",
+                 "moves", "ignored")
 
     def __init__(self):
         self.history = deque(maxlen=HISTORY)
@@ -35,6 +36,8 @@ class _Agent:
         self.last_delta = None
         self.deck = None
         self.games = 0
+        self.moves = 0        # moves this agent tried to make, all matches
+        self.ignored = 0      # ...of which this many did nothing
 
 
 class MatchLog:
@@ -57,7 +60,7 @@ class MatchLog:
                         e = json.loads(line)
                         int(e["id"]), e["p0"], e["p1"]
                     except (ValueError, KeyError, TypeError):
-                        continue   # a torn last line must not take the ladder down
+                        continue   # a torn last line must not take the server down
                     self._apply(e)
         else:
             self._backfill()
@@ -114,6 +117,8 @@ class MatchLog:
             mine = None if delta is None else (delta if seat == 0 else -delta)
             rating = e.get("r0" if seat == 0 else "r1")
             a.games += 1
+            a.moves += (e.get("moves") or [0, 0])[seat]
+            a.ignored += (e.get("ignored") or [0, 0])[seat]
             a.results.append(res)
             a.last_delta = mine
             if rating is not None:
@@ -158,7 +163,7 @@ class MatchLog:
         return {r["name"]: old_rank[r["name"]] - r["rank"] for r in standings}
 
     def snapshot(self, standings: list[dict], online: set[str], live: int) -> dict:
-        """Everything the ladder page needs, as one JSON-ready dict."""
+        """Everything the standings page needs, as one JSON-ready dict."""
         with self._lock:
             moves = self._moves(standings)
             rows = []
@@ -182,6 +187,7 @@ class MatchLog:
                     "peak": a.peak if a.peak is not None else r["rating"],
                     "deck": a.deck,
                     "recent": list(a.recent),
+                    "moves": a.moves, "ignored": a.ignored,
                     "online": r["name"] in online,
                 })
             feed = [{

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cr-arena-server"
 version = "0.1.0"
-description = "Competition ladder server for the cr_sim Clash-Royale-style battle simulator."
+description = "Tournament server for the cr_sim Clash-Royale-style battle simulator."
 requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }

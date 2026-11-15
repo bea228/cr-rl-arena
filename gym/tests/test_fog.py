@@ -12,21 +12,16 @@ import pytest
 import cr_sim
 
 
-DECK0 = ["Knight", "Archers", "Musketeer", "Giant",
-         "Fireball", "Minions", "Arrows", "Goblins"]
-DECK1 = ["Hog Rider", "Valkyrie", "Baby Dragon", "Wizard",
-         "Zap", "Skeletons", "Bomber", "Cannon"]
+DECK0 = ["knight", "archers", "musketeer", "giant",
+         "fireball", "minions", "arrows", "goblins"]
+DECK1 = ["hogrider", "valkyrie", "babydragon", "wizard",
+         "zap", "skeletons", "bomber", "cannon"]
 
 
 def _fresh():
     b = cr_sim.Battle()
     # Distinct decks so player 0's and player 1's hands provably differ.
-    try:
-        b.reset(seed=99, deck0=DECK0, deck1=DECK1)
-    except Exception:
-        # Fall back to default decks if the card names above aren't in the lib;
-        # the guard is independent of which cards are dealt.
-        b.reset(seed=99)
+    b.reset(seed=99, deck0=DECK0, deck1=DECK1)
     return b
 
 
@@ -80,10 +75,10 @@ def test_view_exposes_public_board_and_opponent_crowns():
     b = _fresh()
     v0, v1 = b.view(0), b.view(1)
 
-    # Full board (both sides' deployed units + towers) is public to both views.
-    assert v0.entities() == b.entities()
-    assert v1.entities() == b.entities()
-    assert v0.projectiles() == b.projectiles()
+    # Full board (both sides' deployed units + towers) is public to both views,
+    # each in its own seat frame (see test_seat.py for the frame itself).
+    assert len(v0.entities()) == len(v1.entities()) == len(b.spectator_entities())
+    assert v0.projectiles() == b.spectator_projectiles()
 
     # Towers (both sides) are visible, including HP, via towers()/entities().
     towers = v0.towers()
@@ -94,6 +89,7 @@ def test_view_exposes_public_board_and_opponent_crowns():
 
     # Crown score is public; the opponent's crown count is explicitly exposed.
     assert v0.crowns() == b.crowns()
+    assert v1.crowns() == b.crowns()[::-1]       # always (mine, theirs)
     assert v0.my_crowns() == b.crowns()[0]
     assert v0.opponent_crowns() == b.crowns()[1]
     assert v1.opponent_crowns() == b.crowns()[0]
@@ -107,7 +103,7 @@ def test_view_observe_matches_fog_observation():
     assert o_view == o_raw
     # The fog observation only carries this seat's own private fields; there is
     # no 'opponent_*' private key and elixir is the player's own.
-    assert o_view["player"] == 0
+    assert "player" not in o_view                # an agent is never told its seat
     assert o_view["elixir"] == b.elixir(0)
     assert o_view["hand"] == b.hand(0)
     assert "opponent_hand" not in o_view

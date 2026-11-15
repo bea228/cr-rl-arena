@@ -1,13 +1,13 @@
-"""HTTP side of the arena: the ladder page, its data, and match replays.
+"""HTTP side of the server: the standings page, its data, and match replays.
 
 Served from the same port as the agent WebSocket (hosts like Railway expose one
 port per service). A request that asks for a WebSocket upgrade is left alone and
 becomes an agent connection; any other GET is answered here.
 
 Routes
-    /                     the ladder page
+    /                     the standings page
     /replay?id=N          the replay viewer
-    /api/ladder           standings, recent results and live counts (JSON)
+    /api/standings        standings, recent results and live counts (JSON)
     /api/replay/N         frame-by-frame trace of match N (JSON, re-simulated)
     /healthz              liveness probe
 """
@@ -78,15 +78,15 @@ class Web:
             if path in PAGES:
                 with open(os.path.join(WEB_DIR, PAGES[path]), "rb") as f:
                     return _response(200, f.read(), "text/html; charset=utf-8", gz=gz, cache="no-cache")
-            if path == "/api/ladder":
-                return _json(200, self.arena.ladder_snapshot(), gz=gz)
+            if path == "/api/standings":
+                return _json(200, self.arena.standings_snapshot(), gz=gz)
             if path == "/healthz":
                 return _response(200, b"ok\n", "text/plain; charset=utf-8")
             m = REPLAY_RE.match(path)
             if m:
                 return await self._replay(int(m.group(1)), gz)
             return _json(404, {"error": "not found"})
-        except Exception as e:  # a bad request must never take the ladder down
+        except Exception as e:  # a bad request must never take the server down
             print(f"[web error] {path}: {e!r}")
             return _json(500, {"error": "internal error"})
 

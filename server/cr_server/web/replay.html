@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>Replay · Arena Ladder</title>
+<title>Replay · Tournament standings</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23ffb829'/%3E%3Cpath d='M5 9l3.5 3L12 7l3.5 5L19 9l-1.2 7.4H6.2z' fill='%231a1200'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -140,7 +140,7 @@
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="/"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Ladder</a>
+  <a class="back" href="/"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Standings</a>
 
   <div class="msg" id="msg"><div class="spin"></div><span>Rebuilding the match…</span></div>
 
@@ -648,11 +648,11 @@ cv.addEventListener("pointermove", (e) => {
 cv.addEventListener("pointerleave", () => { hover = null; $("tip").hidden = true; if (!playing) draw(); });
 
 function fail(title, text) {
-  $("msg").innerHTML = `<b>${esc(title)}</b><span>${esc(text)}</span><br><a class="btn" href="/">Back to the ladder</a>`;
+  $("msg").innerHTML = `<b>${esc(title)}</b><span>${esc(text)}</span><br><a class="btn" href="/">Back to the standings</a>`;
 }
 async function load() {
   const id = new URLSearchParams(location.search).get("id");
-  if (!id || !/^\d+$/.test(id)) return fail("No match selected", "Pick a match from the results list on the ladder.");
+  if (!id || !/^\d+$/.test(id)) return fail("No match selected", "Pick a match from the results list on the standings page.");
   let res;
   try { res = await fetch("/api/replay/" + id); } catch (e) { return fail("Can't reach the server", "Check your connection and try again."); }
   if (res.status === 404) return fail("Replay not found", "This match has no saved replay.");

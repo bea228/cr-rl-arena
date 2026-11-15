@@ -1,4 +1,4 @@
-"""Elo rating math for the competition ladder."""
+"""Elo rating math for the tournament server."""
 from __future__ import annotations
 
 K_FACTOR = 32.0

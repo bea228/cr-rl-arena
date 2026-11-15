@@ -29,6 +29,35 @@ impl Action {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What became of the action a player sent on the last tick. Recorded every tick
+/// so a move that could not be carried out is reported instead of vanishing: an
+/// agent (or the opponent it trains against) that only ever sends impossible
+/// moves otherwise looks exactly like one that chooses to wait.
+pub enum ActionResult {
+    None,               // no action was sent
+    Ok,                 // the card was played / the ability fired
+    BadSlot,            // slot is not 0..3 (and not the ability slot)
+    NotEnoughElixir,    // the card costs more elixir than the player has
+    NotYourSide,        // a troop or building aimed at a tile the player may not deploy on
+    NothingToMirror,    // Mirror played before any other card
+    AbilityUnavailable, // no champion on the field, on cooldown, or it cannot be paid for
+}
+
+impl ActionResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActionResult::None => "none",
+            ActionResult::Ok => "ok",
+            ActionResult::BadSlot => "bad_slot",
+            ActionResult::NotEnoughElixir => "not_enough_elixir",
+            ActionResult::NotYourSide => "not_your_side",
+            ActionResult::NothingToMirror => "nothing_to_mirror",
+            ActionResult::AbilityUnavailable => "ability_unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
     Running,
     Win0,
@@ -116,6 +145,9 @@ pub struct Engine {
     // [eco] last card each player successfully deployed (for Mirror). Part of
     // reset() state so matches replay reproducibly. None = nothing played yet.
     last_played: [Option<usize>; 2],
+    // What happened to each player's action on the last tick (see ActionResult).
+    // Part of reset() state; a pure function of the action log, so replays agree.
+    pub last_action: [ActionResult; 2],
     // [path] Cross-tick flow-field memo (NOT replay state): a pure cache of
     // BFS routing fields, rebuilt on demand. See PathCache.
     path_cache: PathCache,
@@ -141,11 +173,12 @@ impl Engine {
             king_down_dmg_seen: [false, false],
             last_crowns_for_ot: [0, 0],
             last_played: [None, None], // [eco]
+            last_action: [ActionResult::None; 2],
             path_cache: PathCache::default(), // [path]
         }
     }
 
-    fn default_deck(&self) -> Vec<usize> {
+    pub fn default_deck(&self) -> Vec<usize> {
         // first 8 deployable troops/buildings (skip spells so a random policy still
         // fights); at most one champion per deck ([champ] one-per-deck rule).
         let mut v: Vec<usize> = Vec::with_capacity(8);
@@ -194,6 +227,7 @@ impl Engine {
         self.king_down_dmg_seen = [false, false];
         self.last_crowns_for_ot = [0, 0];
         self.last_played = [None, None]; // [eco]
+        self.last_action = [ActionResult::None; 2];
         self.path_cache = PathCache::default(); // [path] drop any memo from a prior match
 
         self.deck = decks.unwrap_or_else(|| [self.default_deck(), self.default_deck()]);
@@ -359,11 +393,11 @@ impl Engine {
         for p in order {
             // [champ] the reserved slot activates the champion ability in-stream
             // (same tick ordering as a deploy) so replays stay deterministic.
-            if actions[p].slot == ABILITY_SLOT {
-                self.activate_ability(p);
+            self.last_action[p] = if actions[p].slot == ABILITY_SLOT {
+                if self.activate_ability(p) { ActionResult::Ok } else { ActionResult::AbilityUnavailable }
             } else {
-                self.try_deploy(p, actions[p]);
-            }
+                self.try_deploy(p, actions[p])
+            };
         }
         self.simulate();
         self.tick += 1;
@@ -371,9 +405,16 @@ impl Engine {
         self.outcome
     }
 
-    fn try_deploy(&mut self, player: usize, a: Action) {
+    /// Play the card in `a.slot` at `a`'s tile if that is possible, and say what
+    /// happened. `Action::noop()` (slot -1) means "no action"; any other slot
+    /// outside the hand is a mistake and is reported as one. Nothing is spent
+    /// unless the result is `Ok`.
+    fn try_deploy(&mut self, player: usize, a: Action) -> ActionResult {
+        if a.slot == Action::noop().slot {
+            return ActionResult::None;
+        }
         if a.slot < 0 || a.slot as usize >= HAND {
-            return;
+            return ActionResult::BadSlot;
         }
         let slot = a.slot as usize;
         let card = self.queue[player][slot];
@@ -384,14 +425,14 @@ impl Engine {
         let (def, cost_elixir) = if is_mirror {
             match self.last_played[player] {
                 Some(last) => (last, self.lib.defs[last].elixir + 1),
-                None => return, // nothing deployed yet: Mirror is a no-op
+                None => return ActionResult::NothingToMirror, // nothing deployed yet
             }
         } else {
             (card, self.lib.defs[card].elixir)
         };
         let cost = Fx::from_int(cost_elixir as i64);
         if self.elixir[player] < cost {
-            return;
+            return ActionResult::NotEnoughElixir;
         }
         // deploy snaps to a tile; troops/buildings only on your own territory
         // (plus an opened pocket once you've taken an enemy princess tower),
@@ -399,7 +440,7 @@ impl Engine {
         let is_spell = self.lib.defs[def].ctype == CardType::Spell;
         let pos = snap_to_tile(Self::clamp_pos(V2::new(a.x, a.y)));
         if !is_spell && !self.deploy_allowed(player, pos, def) {
-            return;
+            return ActionResult::NotYourSide;
         }
         self.elixir[player] = self.elixir[player] - cost;
         self.cycle(player, slot);
@@ -409,6 +450,7 @@ impl Engine {
             self.last_played[player] = Some(def);
         }
         self.place_card(player, def, pos);
+        ActionResult::Ok
     }
 
     /// Place a resolved card: cast it if a spell, else spawn its troop/building

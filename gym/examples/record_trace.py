@@ -28,8 +28,8 @@ def bot(b, player, rng):
         return None
     slot = rng.choice(idxs)
     lane = rng.choice([3.5, 14.5]) + rng.uniform(-1.0, 1.0)   # push a lane (bridge in front)
-    y = rng.uniform(9, 14) if player == 0 else rng.uniform(18, 23)
-    return (slot, lane, y)
+    # each seat places in its own frame, where its own side is always the bottom
+    return (slot, lane, rng.uniform(9, 14))
 
 
 def main():
@@ -37,7 +37,7 @@ def main():
     out_path = sys.argv[2] if len(sys.argv) > 2 else "viewer/trace.json"
 
     b = cr_sim.Battle()
-    b.reset(seed=seed)
+    b.reset(seed, "default", "default")   # the built-in deck for both players
     cards = b.deployable_cards() + ["princess_tower", "king_tower"]
     card_idx = {n: i for i, n in enumerate(cards)}
 
@@ -54,7 +54,7 @@ def main():
         t += 1
         if t % fps_divisor == 0:
             ents = []
-            for (owner, card, x, y, hp, mhp, flying, is_tower, deploying, eid, hw, hh) in b.entities():
+            for (owner, card, x, y, hp, mhp, flying, is_tower, deploying, eid, hw, hh) in b.spectator_entities():
                 flags = (1 if flying else 0) | (2 if is_tower else 0) | (4 if deploying else 0)
                 ents.append([owner, card_idx.get(card, 0), round(x, 2), round(y, 2),
                              round(hp / mhp, 3) if mhp else 0.0, flags, eid, round(hw, 2)])

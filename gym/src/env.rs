@@ -3,8 +3,20 @@
 //! Minimal, dependency-free surface an RL agent drives:
 //!   b = Battle()
 //!   b.reset(seed, deck0, deck1)
+//!   obs = b.view(player).observe()     # what that seat sees
 //!   out = b.step(action0, action1)     # action = (slot, x, y) or None
-//!   obs = b.observe(player)            # dict of scalars + entity lists
+//!
+//! THE SEAT FRAME. Everything an agent reads or sends is in its own seat's frame,
+//! in which it is always the bottom player: its towers sit at low y, it attacks
+//! toward high y, entities it owns have owner 0, and crowns read (mine, theirs).
+//! For the seat that is really on top, this layer mirrors the board (y -> HEIGHT
+//! - y) on the way out and mirrors its actions on the way in, so one policy plays
+//! either seat unchanged and never needs to know which seat it has. The engine is
+//! exactly mirror-symmetric (see `seat_tests` in engine.rs), so a top-seat game
+//! seen this way is indistinguishable from a bottom-seat game.
+//!
+//! The unmirrored board is exposed only through the `spectator_*` accessors, for
+//! rendering, replays and debugging -- never as input to an agent.
 //!
 //! Observations are returned as plain Python tuples/lists/dicts so there are no
 //! third-party deps; the optional numpy/gym adapters live in Python.
@@ -15,7 +27,7 @@
 //!   outs = bb.step(actions0, actions1)     # one tick each, all cores, GIL released
 //!   bb[i]                                  # an ordinary `Battle` (every accessor works)
 
-use crate::arena::{HEIGHT, OVERTIME_TICKS, REGULATION_TICKS, TICKS_PER_SECOND, WIDTH};
+use crate::arena::{mirror_y, snap_to_tile, HEIGHT, OVERTIME_TICKS, REGULATION_TICKS, TICKS_PER_SECOND, WIDTH};
 use crate::cards::Library;
 use crate::engine::{Action, Engine, Outcome};
 use crate::fixed::{Fx, V2};
@@ -26,6 +38,70 @@ use rayon::prelude::*;
 #[pyclass]
 pub struct Battle {
     eng: Engine,
+}
+
+/// A deck as passed from Python: the word "default", or a list of card names.
+#[derive(FromPyObject, Clone)]
+pub enum DeckArg {
+    Keyword(String),
+    Cards(Vec<String>),
+}
+
+/// One entity as handed to Python:
+/// (owner, card, x, y, hp, max_hp, flying, is_tower, deploying, id, half_w, half_h)
+type Ent = (u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64);
+
+/// An action given in `player`'s seat frame, converted to the engine's board frame.
+///
+/// The bottom seat's frame is the board frame. For the top seat the target is
+/// first snapped to its tile *in the seat frame* and only then mirrored, so the
+/// same (x, y) lands on mirror-image tiles for both seats even when it sits
+/// exactly on a tile boundary (a plain mirror-then-snap would be off by one tile).
+fn seat_action(player: usize, a: Option<(i32, f64, f64)>) -> Action {
+    match a {
+        None => Action::noop(),
+        Some((slot, x, y)) => {
+            // a negative slot would read as "no action" inside the engine; it is a
+            // mistake, so make sure it is reported as a bad slot
+            let slot = if slot < 0 { i32::MAX } else { slot };
+            let (x, y) = (Fx::from_f64(x), Fx::from_f64(y));
+            if player == 0 {
+                return Action { slot, x, y };
+            }
+            let clamped = V2::new(x.max(Fx(0)).min(WIDTH), y.max(Fx(0)).min(HEIGHT));
+            let tile = snap_to_tile(clamped);
+            Action { slot, x: tile.x, y: mirror_y(tile.y) }
+        }
+    }
+}
+
+/// The board as `player` sees it: itself at the bottom, its own entities as owner
+/// 0 and listed first. Both seats get the same ordering rule and tower ids, so a
+/// position and its mirror image produce identical lists for the two seats.
+fn seat_entities(player: usize, mut ents: Vec<Ent>) -> Vec<Ent> {
+    if player == 1 {
+        for e in ents.iter_mut() {
+            e.0 = 1 - e.0;
+            e.3 = HEIGHT.to_f64() - e.3;
+            // the six towers are created first (ids 1-3 bottom seat, 4-6 top seat);
+            // swap the two triples so "my king" has the same id from either seat
+            if e.7 && e.9 >= 1 && e.9 <= 6 {
+                e.9 = if e.9 <= 3 { e.9 + 3 } else { e.9 - 3 };
+            }
+        }
+    }
+    ents.sort_by_key(|e| (e.0, e.9)); // mine first, then theirs; oldest first within each
+    ents
+}
+
+/// Outcome from `player`'s side: 0 running, 1 I won, 2 opponent won, 3 draw.
+fn seat_outcome(player: usize, o: Outcome) -> i32 {
+    match (o, player) {
+        (Outcome::Running, _) => 0,
+        (Outcome::Draw, _) => 3,
+        (Outcome::Win0, 0) | (Outcome::Win1, 1) => 1,
+        _ => 2,
+    }
 }
 
 fn outcome_code(o: Outcome) -> i32 {
@@ -54,27 +130,28 @@ impl Battle {
         Ok(Battle { eng: Engine::new(lib) })
     }
 
-    /// Reset to tick 0. Decks are lists of card names (length 8); None = default.
+    /// Reset to tick 0. A deck is required for each player: a list of 8 card
+    /// names, or the word "default" for the built-in deck. Leaving one out is an
+    /// error, as it is on the competition server.
     #[pyo3(signature = (seed=0, deck0=None, deck1=None))]
     fn reset(
         &mut self,
         seed: u64,
-        deck0: Option<Vec<String>>,
-        deck1: Option<Vec<String>>,
+        deck0: Option<DeckArg>,
+        deck1: Option<DeckArg>,
     ) -> PyResult<()> {
-        let decks = match (deck0, deck1) {
-            (Some(a), Some(b)) => {
-                let da = self.resolve_deck(&a)?;
-                let db = self.resolve_deck(&b)?;
-                Some([da, db])
-            }
-            (None, None) => None,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                "provide both decks or neither",
-            )),
-        };
-        self.eng.reset(seed, decks);
+        let d0 = self.deck_arg(deck0, "deck0")?;
+        let d1 = self.deck_arg(deck1, "deck1")?;
+        self.eng.reset(seed, Some([d0, d1]));
         Ok(())
+    }
+
+    /// What happened to the action `player` sent on the last tick: "none" (nothing
+    /// sent), "ok", or why it was ignored -- "bad_slot", "not_enough_elixir",
+    /// "not_your_side", "nothing_to_mirror", "ability_unavailable". An ignored
+    /// action spends nothing.
+    fn last_action(&self, player: usize) -> &'static str {
+        self.eng.last_action[player.min(1)].as_str()
     }
 
     /// Check that `deck` is legal without starting a match: exactly 8 different,
@@ -85,16 +162,19 @@ impl Battle {
         self.resolve_deck(&deck).map(|_| ())
     }
 
-    /// Advance one tick. Each action is (hand_slot, x, y) or None for no-op.
-    /// Returns the outcome code: 0 running, 1 player0 win, 2 player1 win, 3 draw.
+    /// Advance one tick. Each action is (hand_slot, x, y) or None for no-op, and
+    /// each is given in ITS OWN SEAT'S FRAME: both players place cards as if they
+    /// were at the bottom (own side is y < 15), exactly as their `view(...)`
+    /// shows the board. Returns the referee's outcome code: 0 running, 1 seat 0
+    /// won, 2 seat 1 won, 3 draw.
     #[pyo3(signature = (action0=None, action1=None))]
     fn step(
         &mut self,
         action0: Option<(i32, f64, f64)>,
         action1: Option<(i32, f64, f64)>,
     ) -> i32 {
-        let a0 = to_action(action0);
-        let a1 = to_action(action1);
+        let a0 = seat_action(0, action0);
+        let a1 = seat_action(1, action1);
         outcome_code(self.eng.step([a0, a1]))
     }
 
@@ -193,12 +273,13 @@ impl Battle {
             .collect()
     }
 
-    /// All field entities as tuples:
+    /// SPECTATOR view of the board, unmirrored: for rendering, replays and
+    /// debugging, NOT for agent input (an agent reads `view(player).entities()`,
+    /// which is in its own seat frame). `owner` is the real seat and seat 1's
+    /// towers are at the top. Tuples:
     /// (owner, card, x, y, hp, max_hp, flying, is_tower, deploying, id, half_w, half_h)
     /// half_w/half_h are box half-extents in tiles (0 => circle; radius via card).
-    fn entities(
-        &self,
-    ) -> Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)> {
+    fn spectator_entities(&self) -> Vec<Ent> {
         self.eng
             .entities
             .iter()
@@ -222,8 +303,8 @@ impl Battle {
             .collect()
     }
 
-    /// Projectiles as (owner, x, y) for the viewer.
-    fn projectiles(&self) -> Vec<(u8, f64, f64)> {
+    /// SPECTATOR view of projectiles in flight, unmirrored: (owner, x, y).
+    fn spectator_projectiles(&self) -> Vec<(u8, f64, f64)> {
         self.eng
             .projectiles
             .iter()
@@ -231,22 +312,27 @@ impl Battle {
             .collect()
     }
 
-    /// Structured per-player observation dict (scalars + entity lists).
+    /// The observation for the agent in seat `player` (same as
+    /// `view(player).observe()`), in that seat's frame: the agent is always the
+    /// bottom player, owner 0 is "mine", `crowns` is (mine, theirs) and `outcome`
+    /// is 1 when this agent won. It deliberately does not say which seat this is.
+    /// The opponent's hand, next card and elixir are not included.
     fn observe<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
         let p = player.min(1);
+        let c = self.crowns();
         let d = PyDict::new(py);
         d.set_item("tick", self.eng.tick)?;
-        d.set_item("player", p)?;
         d.set_item("elixir", self.elixir(p))?;
         d.set_item("phase", self.phase())?;
-        d.set_item("crowns", self.crowns())?;
+        d.set_item("crowns", if p == 0 { c } else { (c.1, c.0) })?;
         d.set_item("hand", self.hand(p))?;
         d.set_item("hand_cost", self.hand_cost(p))?;
         d.set_item("next_card", self.next_card(p))?;
         d.set_item("legal", self.legal(p))?;
-        d.set_item("entities", self.entities())?;
+        d.set_item("last_action", self.last_action(p))?;
+        d.set_item("entities", seat_entities(p, self.spectator_entities()))?;
         d.set_item("done", self.done())?;
-        d.set_item("outcome", self.outcome())?;
+        d.set_item("outcome", seat_outcome(p, self.eng.outcome))?;
         Ok(d)
     }
 
@@ -262,6 +348,19 @@ impl Battle {
 }
 
 impl Battle {
+    fn deck_arg(&self, deck: Option<DeckArg>, which: &str) -> PyResult<Vec<usize>> {
+        match deck {
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{which} is required: pass a list of 8 card names, or \"default\" for the built-in deck"
+            ))),
+            Some(DeckArg::Keyword(k)) if k == "default" => Ok(self.eng.default_deck()),
+            Some(DeckArg::Keyword(k)) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{which}: unknown deck '{k}': pass a list of 8 card names, or \"default\""
+            ))),
+            Some(DeckArg::Cards(names)) => self.resolve_deck(&names),
+        }
+    }
+
     fn resolve_deck(&self, names: &[String]) -> PyResult<Vec<usize>> {
         if names.len() != 8 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -314,16 +413,16 @@ type BatchActions = Option<Vec<Option<(i32, f64, f64)>>>;
 /// with the GIL released.
 ///
 /// This is purely a throughput tool. Each element is an ordinary [`Battle`]
-/// (`bb[i]`), so every accessor -- `observe`, `view`, `entities`, `legal`,
+/// (`bb[i]`), so every accessor -- `view`, `observe`, `legal`,
 /// `reset`, ... -- works per battle exactly as it does standalone, and a battle
 /// stepped here plays out bit-identically to the same battle stepped alone.
 /// Nothing about rewards, observation encoding or when to reset is decided here.
 ///
 ///   bb = BatchBattle(256)                    # threads=None: one per CPU core
-///   bb.reset(range(256))                     # one seed per battle
+///   bb.reset(range(256), deck, deck)         # one seed per battle
 ///   outs = bb.step(acts0, acts1)             # lists of (slot, x, y) | None
 ///   for i, o in enumerate(outs):
-///       if o: bb[i].reset(new_seed)          # finished battles are left as-is
+///       if o: bb[i].reset(new_seed, deck, deck)   # finished battles are left as-is
 #[pyclass]
 pub struct BatchBattle {
     battles: Vec<Py<Battle>>,
@@ -332,7 +431,7 @@ pub struct BatchBattle {
 }
 
 impl BatchBattle {
-    fn batch_actions(&self, a: BatchActions, which: &str) -> PyResult<Vec<Action>> {
+    fn batch_actions(&self, a: BatchActions, player: usize, which: &str) -> PyResult<Vec<Action>> {
         match a {
             None => Ok(vec![Action::noop(); self.battles.len()]),
             Some(v) => {
@@ -343,7 +442,7 @@ impl BatchBattle {
                         self.battles.len()
                     )));
                 }
-                Ok(v.into_iter().map(to_action).collect())
+                Ok(v.into_iter().map(|x| seat_action(player, x)).collect())
             }
         }
     }
@@ -379,15 +478,15 @@ impl BatchBattle {
     }
 
     /// Reset every battle to tick 0. `seeds` has one seed per battle; the decks
-    /// (both or neither, as in `Battle.reset`) are shared by all of them. To reset
+    /// (required, as in `Battle.reset`: card names or "default") are shared by all. To reset
     /// a single battle -- e.g. one that just finished -- call `bb[i].reset(...)`.
     #[pyo3(signature = (seeds, deck0=None, deck1=None))]
     fn reset(
         &self,
         py: Python<'_>,
         seeds: Vec<u64>,
-        deck0: Option<Vec<String>>,
-        deck1: Option<Vec<String>>,
+        deck0: Option<DeckArg>,
+        deck1: Option<DeckArg>,
     ) -> PyResult<()> {
         if seeds.len() != self.battles.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -403,8 +502,8 @@ impl BatchBattle {
     }
 
     /// Advance every battle by one tick, exactly as `Battle.step` would: battle
-    /// `i` gets `actions0[i]` / `actions1[i]`. Either list may be None (all
-    /// no-ops). Battles that have already finished are left untouched. Returns one
+    /// `i` gets `actions0[i]` / `actions1[i]`, each in its own seat's frame.
+    /// Either list may be None (all no-ops). Battles that have already finished are left untouched. Returns one
     /// outcome code per battle. Runs on the worker threads with the GIL released;
     /// results do not depend on the thread count.
     #[pyo3(signature = (actions0=None, actions1=None))]
@@ -414,8 +513,8 @@ impl BatchBattle {
         actions0: BatchActions,
         actions1: BatchActions,
     ) -> PyResult<Vec<i32>> {
-        let a0 = self.batch_actions(actions0, "actions0")?;
-        let a1 = self.batch_actions(actions1, "actions1")?;
+        let a0 = self.batch_actions(actions0, 0, "actions0")?;
+        let a1 = self.batch_actions(actions1, 1, "actions1")?;
         // Exclusive borrows of every battle for the duration of the call; the
         // engines are then plain `&mut` data, safe to hand to other threads.
         let mut guards: Vec<PyRefMut<'_, Battle>> = Vec::with_capacity(self.battles.len());
@@ -480,12 +579,9 @@ impl BatchBattle {
     fn crowns(&self, py: Python<'_>) -> Vec<(i32, i32)> {
         self.battles.iter().map(|b| b.bind(py).borrow().crowns()).collect()
     }
-    /// `Battle.entities()` for every battle: a list (per battle) of entity tuples.
-    fn entities(
-        &self,
-        py: Python<'_>,
-    ) -> Vec<Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)>> {
-        self.battles.iter().map(|b| b.bind(py).borrow().entities()).collect()
+    /// `Battle.spectator_entities()` for every battle (unmirrored; not agent input).
+    fn spectator_entities(&self, py: Python<'_>) -> Vec<Vec<Ent>> {
+        self.battles.iter().map(|b| b.bind(py).borrow().spectator_entities()).collect()
     }
 
     fn __repr__(&self) -> String {
@@ -507,6 +603,10 @@ fn view_opponent(player: usize) -> usize {
 
 /// A read-only, per-player window onto a [`Battle`] that enforces Clash Royale's
 /// hidden-information model at the API boundary.
+///
+/// Everything here is in this player's SEAT FRAME (see the module docs): the
+/// player is always at the bottom, owns the entities marked owner 0, and reads
+/// crowns as (mine, theirs). The same code therefore plays either seat.
 ///
 /// What this player **may** see (and this view exposes):
 ///   * the full board — every deployed unit, tower, and projectile of *both*
@@ -533,7 +633,8 @@ pub struct PlayerView {
 
 #[pymethods]
 impl PlayerView {
-    /// This view's own seat (0 or 1).
+    /// The real seat this view belongs to (0 or 1). For the harness that created
+    /// the view; nothing an agent reads through the view depends on it.
     #[getter]
     fn player(&self) -> usize {
         self.player
@@ -557,16 +658,26 @@ impl PlayerView {
     fn phase(&self, py: Python<'_>) -> &'static str {
         self.battle.borrow(py).phase()
     }
+    /// Outcome from this player's side: 0 running, 1 I won, 2 opponent won, 3 draw.
     fn outcome(&self, py: Python<'_>) -> i32 {
-        self.battle.borrow(py).outcome()
+        seat_outcome(self.player, self.battle.borrow(py).eng.outcome)
+    }
+    /// "win", "loss" or "draw" for this player; None while the match is running.
+    fn result(&self, py: Python<'_>) -> Option<&'static str> {
+        match self.outcome(py) {
+            0 => None,
+            1 => Some("win"),
+            2 => Some("loss"),
+            _ => Some("draw"),
+        }
     }
     fn done(&self, py: Python<'_>) -> bool {
         self.battle.borrow(py).done()
     }
 
-    /// (player0_crowns, player1_crowns). The crown score is public to both sides.
+    /// (my_crowns, opponent_crowns). The crown score is public to both sides.
     fn crowns(&self, py: Python<'_>) -> (i32, i32) {
-        self.battle.borrow(py).crowns()
+        (self.my_crowns(py), self.opponent_crowns(py))
     }
     /// This player's own crown count.
     fn my_crowns(&self, py: Python<'_>) -> i32 {
@@ -579,32 +690,34 @@ impl PlayerView {
         if self.player == 0 { c.1 } else { c.0 }
     }
 
-    /// Full board — every deployed unit and tower of *both* sides (public).
-    /// Same tuple shape as `Battle.entities()`.
-    fn entities(
-        &self,
-        py: Python<'_>,
-    ) -> Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)> {
-        self.battle.borrow(py).entities()
+    /// Full board — every deployed unit and tower of *both* sides (public), in
+    /// this player's seat frame: owner 0 is mine, and my side is the bottom. Mine
+    /// are listed first. Tuples:
+    /// (owner, card, x, y, hp, max_hp, flying, is_tower, deploying, id, half_w, half_h)
+    fn entities(&self, py: Python<'_>) -> Vec<Ent> {
+        seat_entities(self.player, self.battle.borrow(py).spectator_entities())
     }
 
     /// The tower subset of `entities()` (both sides' crown/king towers are
     /// public, including their HP) — convenience for reading tower state.
-    fn towers(
-        &self,
-        py: Python<'_>,
-    ) -> Vec<(u8, String, f64, f64, i32, i32, bool, bool, bool, u32, f64, f64)> {
-        self.battle
-            .borrow(py)
-            .entities()
+    fn towers(&self, py: Python<'_>) -> Vec<Ent> {
+        self.entities(py)
             .into_iter()
             .filter(|e| e.7) // e.7 == is_tower
             .collect()
     }
 
-    /// Projectiles in flight for both sides (public).
+    /// Projectiles in flight for both sides (public), in this player's seat
+    /// frame: (owner, x, y) with owner 0 mine.
     fn projectiles(&self, py: Python<'_>) -> Vec<(u8, f64, f64)> {
-        self.battle.borrow(py).projectiles()
+        let mut v = self.battle.borrow(py).spectator_projectiles();
+        if self.player == 1 {
+            for p in v.iter_mut() {
+                p.0 = 1 - p.0;
+                p.2 = HEIGHT.to_f64() - p.2;
+            }
+        }
+        v
     }
 
     // ---- private: this player's OWN state only (never the opponent's) ----
@@ -631,14 +744,21 @@ impl PlayerView {
     fn champion_status(&self, py: Python<'_>) -> (bool, i32, i32) {
         self.battle.borrow(py).champion_status(self.player)
     }
-    /// Per-hand-slot affordability mask for this player.
+    /// Per-hand-slot affordability mask for this player. It only says whether the
+    /// card can be paid for, not where it may be placed.
     fn legal(&self, py: Python<'_>) -> Vec<bool> {
         self.battle.borrow(py).legal(self.player)
     }
+    /// What happened to this player's action on the last tick: "none", "ok", or
+    /// the reason it was ignored (see `Battle.last_action`).
+    fn last_action(&self, py: Python<'_>) -> &'static str {
+        self.battle.borrow(py).last_action(self.player)
+    }
 
-    /// The fog-of-war observation dict for this player (identical to
-    /// `Battle.observe(player)`): own hand/next/elixir/crowns + the full board,
-    /// with the opponent's private state omitted.
+    /// The observation dict for this player (identical to
+    /// `Battle.observe(player)`): own hand/next/elixir + the full board in this
+    /// player's seat frame, with the opponent's private state omitted. This is
+    /// exactly what the competition server sends an agent.
     fn observe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.battle.borrow(py).observe(py, self.player)
     }
@@ -650,7 +770,75 @@ impl PlayerView {
 
 #[cfg(test)]
 mod view_tests {
-    use super::{view_opponent, view_player};
+    use super::{seat_action, seat_entities, seat_outcome, view_opponent, view_player, Ent};
+    use crate::arena::HEIGHT;
+    use crate::cards::Library;
+    use crate::engine::{Engine, Outcome};
+
+    fn ents(eng: &Engine) -> Vec<Ent> {
+        eng.entities
+            .iter()
+            .map(|e| {
+                (e.owner, eng.lib.defs[e.def].name.clone(), e.pos.x.to_f64(), e.pos.y.to_f64(),
+                 e.hp, e.max_hp, eng.lib.defs[e.def].flying, e.is_tower, e.deploy > 0, e.id,
+                 e.half.x.to_f64(), e.half.y.to_f64())
+            })
+            .collect()
+    }
+
+    /// The property the seat frame exists for: when both seats are dealt the same
+    /// hand and send the SAME seat-frame actions, each sees exactly what the other
+    /// sees, every tick, whole match. So an agent cannot tell which seat it has,
+    /// and whatever works from one seat works identically from the other.
+    #[test]
+    fn both_seats_see_the_same_game_when_they_play_the_same_moves() {
+        // includes points on tile boundaries and outside the arena (snapping/clamping)
+        let spots = [(5.5, 9.5), (12.0, 14.0), (3.0, 0.0), (17.99, 6.25), (9.0, 14.999), (-2.0, 40.0), (8.5, 20.5)];
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(7, None); // both seats get the default deck...
+        eng.queue[1] = eng.queue[0].clone(); // ...and here the same hand order too
+        let mut deployed = false;
+        for t in 0..4000usize {
+            let a = if t % 37 == 0 { Some(((t / 37 % 4) as i32, spots[t / 37 % spots.len()].0, spots[t / 37 % spots.len()].1)) } else { None };
+            eng.step([seat_action(0, a), seat_action(1, a)]);
+            let (v0, v1) = (seat_entities(0, ents(&eng)), seat_entities(1, ents(&eng)));
+            // unit ids are handed out in creation order, which alternates between the
+            // seats for same-tick deploys; everything else must be identical
+            let strip = |v: &[Ent]| v.iter().map(|e| (e.0, e.1.clone(), e.2.to_bits(), e.3.to_bits(), e.4, e.5, e.6, e.7, e.8, if e.7 { e.9 } else { 0 }, e.10.to_bits(), e.11.to_bits())).collect::<Vec<_>>();
+            let (mut s0, mut s1) = (strip(&v0), strip(&v1));
+            s0.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            s1.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert!(s0 == s1, "the two seats saw different boards at tick {t}");
+            assert_eq!(eng.elixir[0].0, eng.elixir[1].0, "elixir differs at tick {t}");
+            assert_eq!(seat_outcome(0, eng.outcome), seat_outcome(1, eng.outcome));
+            deployed |= eng.entities.iter().any(|e| !e.is_tower);
+            if eng.outcome != Outcome::Running {
+                break;
+            }
+        }
+        assert!(deployed, "the scripted actions must actually deploy units");
+    }
+
+    #[test]
+    fn seat_frame_puts_me_at_the_bottom_as_owner_zero() {
+        let mut eng = Engine::new(Library::default_lib());
+        eng.reset(1, None);
+        let (v0, v1) = (seat_entities(0, ents(&eng)), seat_entities(1, ents(&eng)));
+        assert_eq!(v0, v1, "at kick-off both seats see the identical board");
+        for v in [&v0, &v1] {
+            assert!(v[..3].iter().all(|e| e.0 == 0 && e.3 < HEIGHT.to_f64() / 2.0), "mine: first, owner 0, bottom half");
+            assert!(v[3..].iter().all(|e| e.0 == 1 && e.3 > HEIGHT.to_f64() / 2.0));
+            assert_eq!(v.iter().map(|e| e.9).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6]);
+        }
+    }
+
+    #[test]
+    fn outcome_is_reported_from_each_seat() {
+        assert_eq!((seat_outcome(0, Outcome::Win0), seat_outcome(1, Outcome::Win0)), (1, 2));
+        assert_eq!((seat_outcome(0, Outcome::Win1), seat_outcome(1, Outcome::Win1)), (2, 1));
+        assert_eq!((seat_outcome(0, Outcome::Draw), seat_outcome(1, Outcome::Draw)), (3, 3));
+        assert_eq!((seat_outcome(0, Outcome::Running), seat_outcome(1, Outcome::Running)), (0, 0));
+    }
 
     #[test]
     fn seat_clamps_to_valid_range() {
@@ -670,17 +858,6 @@ mod view_tests {
         for p in 0..2usize {
             assert_ne!(view_player(p), view_opponent(p));
         }
-    }
-}
-
-fn to_action(a: Option<(i32, f64, f64)>) -> Action {
-    match a {
-        None => Action::noop(),
-        Some((slot, x, y)) => Action {
-            slot,
-            x: Fx::from_f64(x),
-            y: Fx::from_f64(y),
-        },
     }
 }
 

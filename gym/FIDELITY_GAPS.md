@@ -145,8 +145,7 @@ Everything below is the original gap list; items above are now resolved.
   - `[DEFERRED 2026-11-12]` (M7) Deliberately NOT changed: the core 20 Hz tick is the
     calibration base for every tuned stat, the stat-reconciled level-11 numbers, and
     the determinism/perf baseline — rescaling it would invalidate all of them for no
-    fidelity gain. The *decision* cadence (separate from the tick) is now an explicit
-    config (`DECISION_EVERY`, env `CR_DECISION_EVERY`); see §13.
+    fidelity gain. Agents are asked for a move on every tick; see §13.
 - `[SIMPLIFIED]` **L — Hit cadence applies damage at cooldown edge**, not at the
   specific damage frame within an attack animation.
 
@@ -388,20 +387,16 @@ The spell system is **instant area damage + optional stun only**
   harness, debugging, and replay. Proven by Rust `env::view_tests` (seat/clamp
   logic) and Python `tests/test_fog.py` (own state readable; `view(0).hand(1)` /
   `.elixir(1)` raise `TypeError`; no opponent private key in `observe()`).
-- `[SIMPLIFIED]` **M — Decision cadence.** The server requests actions at 5 Hz
-  (every 4 ticks); CR lets you act on any frame. Fine for deploys (instantaneous)
-  but caps action granularity.
-  - `[RESOLVED 2026-11-12]` (M7) Cadence is now an explicit, documented config:
-    `match.DECISION_EVERY` (env `CR_DECISION_EVERY`, default 4 = 5 Hz), threaded through
-    `run_match(..., decision_every=…)` and the server. Operators can trade granularity
-    for round-trips (e.g. `CR_DECISION_EVERY=1` = act every tick) without touching the
-    core 20 Hz tick. Changing the tick rate itself is deliberately deferred (see §2).
+- `[RESOLVED]` **M — Decision cadence.** The server asks each agent for a move on
+  every tick (20 Hz), the same as stepping the simulator locally, so agents can act
+  on any tick as in CR. Changing the tick rate itself is deliberately deferred
+  (see §2).
 
 ## 14. Scope not modeled at all
 
 - `[MISSING]` 1v1 only — no 2v2, draft, Touchdown, or event rulesets.
 - `[MISSING]` No trophy/ladder matchmaking (server pairs by queue order, not skill
-  bands); the Elo ladder is the competition's own, not CR's.
+  bands); the Elo ranking is the competition's own, not CR's.
 - `[MISSING]` No pre-game (deck-draw order is a seeded shuffle; CR's exact initial
   draw rules are approximated).
 

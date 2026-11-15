@@ -37,3 +37,23 @@ def test_duplicates_rejected():
 @pytest.mark.parametrize("name", ["king_tower", "princess_tower", "golemite", "evo_knight"])
 def test_non_cards_rejected(name):
     _bad(GOOD[:7] + [name], "not a playable card")
+
+
+def test_a_deck_is_required_for_each_player():
+    b = cr_sim.Battle()
+    for args in ((1,), (1, GOOD), (1, None, GOOD)):
+        with pytest.raises(ValueError, match="is required"):
+            b.reset(*args)
+    bb = cr_sim.BatchBattle(2, threads=1)
+    with pytest.raises(ValueError, match="is required"):
+        bb.reset([1, 2])
+
+
+def test_default_keyword_gives_the_built_in_deck():
+    b = cr_sim.Battle()
+    b.reset(1, "default", "default")
+    assert len(b.hand(0)) == 4 and len(b.hand(1)) == 4
+    b.reset(1, GOOD, "default")                      # one of each is fine
+    assert set(b.hand(0)) <= set(GOOD)
+    with pytest.raises(ValueError, match="unknown deck"):
+        b.reset(1, "defualt", GOOD)
