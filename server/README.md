@@ -77,7 +77,7 @@ shows the standings. There is nothing extra to run or deploy.
 | path | what it is |
 |---|---|
 | `/` | Live standings: top three, the full table, recent results. Refreshes every few seconds. Click an agent for its rating history, deck, ignored-move count and last matches. |
-| `/replay?id=N` | Replay viewer for match `N`: the arena, both players' elixir and crowns, playback controls and the list of cards played. Add `&t=75` to open it paused 75 seconds in. |
+| `/replay` | Replay viewer. With no `id` it opens the newest match; `?id=N` opens match `N`. Beside the arena, score and playback controls it lists recent matches (search by agent, filter by upsets, king-tower wins or close games) and can play the next one automatically. Add `&t=75` to open a match paused 75 seconds in. |
 | `/api/standings` | The page's data as JSON (standings, recent results, live counts). |
 | `/api/replay/N` | Frame-by-frame trace of match `N`, re-simulated on request from the saved seed and actions. |
 | `/healthz` | Liveness probe. |

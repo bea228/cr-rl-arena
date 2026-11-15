@@ -121,6 +121,92 @@
   .chips { display: flex; flex-wrap: wrap; gap: 5px; }
   .chip { padding: 4px 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line-2); font-size: 11.5px; color: var(--fg-2); text-transform: capitalize; }
 
+  /* ---------- match browser ---------- */
+  .bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; min-height: 34px; }
+  .bar .back { margin: 0 0 0 -6px; }
+  .bar .sp { flex: 1; }
+  .bar .where { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .bar .where b { color: var(--fg-2); font-weight: 600; }
+  .ib { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border: 1px solid var(--line-2); background: var(--panel); border-radius: 9px; font-weight: 600; font-size: 12.5px; color: var(--fg-2); cursor: pointer; white-space: nowrap; }
+  .ib:hover:not(:disabled) { border-color: var(--gold); color: var(--gold); }
+  .ib:disabled { opacity: .35; cursor: default; }
+  .ib.sq { width: 34px; padding: 0; justify-content: center; }
+  .ib .ct { font: 600 11px/1 var(--body); background: var(--panel-2); border-radius: 99px; padding: 3px 6px; color: var(--muted); }
+  #open-rail { display: none; }
+  .shell { display: grid; grid-template-columns: 304px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .shell.solo { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: sticky; top: 18px; display: flex; flex-direction: column; max-height: calc(100vh - 100px); min-height: 260px; overflow: hidden; }
+  .rail .ph { padding: 14px 16px; }
+  .rail .ph .x { display: none; margin-left: auto; }
+  .live { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+  .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--win); box-shadow: 0 0 0 0 rgba(61,220,151,.5); animation: pulse 2s infinite; }
+  .live.idle i { background: var(--faint); animation: none; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(61,220,151,0); } 100% { box-shadow: 0 0 0 0 rgba(61,220,151,0); } }
+  .find { padding: 12px 16px 10px; display: grid; gap: 10px; border-bottom: 1px solid var(--line); }
+  .find label { position: relative; display: block; }
+  .find svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .find input { width: 100%; height: 34px; padding: 0 10px 0 32px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); font-size: 13px; }
+  .find input::placeholder { color: var(--faint); }
+  .find input:focus { outline: none; border-color: var(--gold); }
+  .filt { display: flex; gap: 5px; flex-wrap: wrap; }
+  .filt button { border: 1px solid var(--line-2); background: transparent; border-radius: 99px; padding: 4px 10px; font-weight: 600; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+  .filt button:hover { color: var(--fg); }
+  .filt button[aria-pressed="true"] { background: rgba(255,184,41,.13); border-color: transparent; color: var(--gold); }
+  .list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  .list li + li { border-top: 1px solid var(--row); }
+  .mt { position: relative; display: block; padding: 10px 16px 11px; }
+  .mt:hover { background: rgba(255,255,255,.03); }
+  .mt:focus-visible { outline-offset: -2px; }
+  .mt.cur { background: linear-gradient(90deg, rgba(255,184,41,.10), rgba(255,184,41,.02)); }
+  .mt.cur::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--gold); }
+  .ms { display: grid; grid-template-columns: 3px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 2px 0; }
+  .ms i { width: 3px; height: 15px; border-radius: 2px; }
+  .ms .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 13.5px; }
+  .ms b { font: 600 21px/1 var(--disp); color: var(--muted); min-width: 14px; text-align: right; }
+  .ms.won .n { color: var(--fg); font-weight: 600; } .ms.won b { color: var(--gold); }
+  .mt .ft { display: flex; gap: 7px; align-items: center; margin-top: 5px; padding-left: 12px; color: var(--faint); font-size: 11.5px; min-height: 16px; }
+  .mt .ft .r { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+  .mt .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
+  .badge.k3 { background: rgba(90,168,255,.14); color: var(--p0); }
+  .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; }
+  .eq i { width: 2px; height: 100%; background: var(--gold); border-radius: 1px; transform-origin: bottom; animation: eq .9s ease-in-out infinite; }
+  .eq i:nth-child(2) { animation-delay: -.3s; } .eq i:nth-child(3) { animation-delay: -.6s; }
+  .eq.still i { animation: none; transform: scaleY(.45); }
+  @keyframes eq { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+  .np { color: var(--gold); font-weight: 600; }
+  .list .none { padding: 30px 18px; text-align: center; color: var(--muted); font-size: 13px; }
+  .list .none b { display: block; color: var(--fg-2); font: 600 18px/1.1 var(--disp); letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; }
+  .rf { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-top: 1px solid var(--line); color: var(--fg-2); font-size: 12.5px; }
+  .rf span { flex: 1; } .rf small { display: block; color: var(--faint); font-size: 11px; }
+  .sw { flex: none; position: relative; width: 36px; height: 20px; border-radius: 99px; border: 0; background: #2a3142; cursor: pointer; transition: background .15s; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .sw[aria-checked="true"] { background: var(--gold); } .sw[aria-checked="true"]::after { transform: translateX(16px); }
+  .scrim { display: none; }
+  .busy { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: rgba(9,11,16,.6); backdrop-filter: blur(2px); line-height: 1.4; color: var(--fg-2); text-align: center; }
+  .over .acts { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .btn.go { background: var(--gold); border-color: var(--gold); color: #1a1200; }
+  .btn.go:hover { color: #1a1200; filter: brightness(1.08); }
+  .upnext { margin: 16px auto 0; max-width: 300px; font-size: 12.5px; color: var(--muted); }
+  .upnext b { display: block; font: 600 17px/1.2 var(--disp); letter-spacing: .02em; text-transform: none; color: var(--fg); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upnext .cd { display: block; height: 3px; border-radius: 99px; background: #2a3142; margin-top: 10px; overflow: hidden; }
+  .upnext .cd i { display: block; height: 100%; width: 0; background: var(--gold); }
+  .upnext .cd.run i { width: 100%; transition: width 6s linear; }
+  .upnext button { all: unset; cursor: pointer; margin-top: 8px; color: var(--muted); font-size: 11.5px; text-decoration: underline; text-underline-offset: 2px; }
+  .upnext button:hover { color: var(--fg); }
+
+  @media (max-width: 1240px) {
+    .shell { grid-template-columns: minmax(0, 1fr); }
+    #open-rail { display: inline-flex; }
+    .rail { position: fixed; z-index: 20; inset: 0 auto 0 0; width: min(340px, 90vw); max-height: none; border-radius: 0 var(--r) var(--r) 0; border-left: 0;
+      padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); padding-left: env(safe-area-inset-left, 0px);
+      transform: translateX(-102%); visibility: hidden; transition: transform .22s ease, visibility 0s .22s; box-shadow: 20px 0 60px rgba(0,0,0,.5); }
+    .rail.open { transform: none; visibility: visible; transition: transform .22s ease; }
+    .rail .ph .x { display: inline-flex; } .rail .live { margin-left: 0; }
+    .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgba(5,7,11,.6); opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .scrim.open { opacity: 1; pointer-events: auto; }
+  }
+  @media (max-width: 520px) { .bar .where, .ib .lbl { display: none; } }
+
   .msg { max-width: 460px; margin: 16vh auto 0; text-align: center; color: var(--fg-2); }
   .msg b { display: block; font: 700 36px/1 var(--disp); letter-spacing: .04em; text-transform: uppercase; color: var(--fg); margin-bottom: 10px; }
   .msg .btn { margin-top: 18px; }
@@ -137,20 +223,43 @@
     .log { max-height: 220px; }
     .keys { display: none; }
   }
-  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2s; } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2s; } .eq i, .live i { animation: none; } .rail { transition: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="/"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Standings</a>
+  <div class="bar">
+    <a class="back" href="/"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Standings</a>
+    <span class="sp"></span>
+    <span class="where" id="where"></span>
+    <button class="ib sq" id="newer" type="button" disabled aria-label="Newer match" title="Newer match (P)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <button class="ib sq" id="older" type="button" disabled aria-label="Older match" title="Older match (N)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+    <button class="ib" id="open-rail" type="button" aria-controls="rail" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class="lbl">Matches</span><span class="ct" id="rail-n" hidden></span></button>
+  </div>
 
-  <div class="msg" id="msg"><div class="spin"></div><span>Rebuilding the match…</span></div>
+  <div class="shell">
+    <aside class="panel rail" id="rail" aria-labelledby="h-rail">
+      <div class="ph"><h2 id="h-rail">Matches</h2><span class="live idle" id="live"><i></i><span>Idle</span></span>
+        <button class="ib sq x" id="close-rail" type="button" aria-label="Close the match list"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="find">
+        <label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="q" type="search" placeholder="Find an agent" autocomplete="off" spellcheck="false" aria-label="Filter matches by agent name"></label>
+        <div class="filt" id="filt" role="group" aria-label="Show">
+          <button type="button" data-f="all" aria-pressed="true">All</button><button type="button" data-f="up" aria-pressed="false">Upsets</button><button type="button" data-f="k3" aria-pressed="false">King down</button><button type="button" data-f="tb" aria-pressed="false">Close</button></div>
+      </div>
+      <ol class="list" id="list"><li class="none">Loading matches…</li></ol>
+      <div class="rf"><span id="h-auto">Play the next match<small>when this one ends</small></span><button class="sw" id="auto" type="button" role="switch" aria-checked="true" aria-labelledby="h-auto"></button></div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+    <main style="min-width:0">
+      <div class="msg" id="msg"><div class="spin"></div><span>Finding the latest match…</span></div>
 
   <div class="stage" id="stage" hidden>
     <div class="board" id="board">
       <canvas id="cv" aria-label="Arena"></canvas>
       <div class="tip" id="tip" hidden></div>
-      <div class="over" id="over" hidden><div><b id="over-t"></b><span id="over-s"></span><button class="btn" id="again" type="button">Watch again</button></div></div>
+      <div class="over" id="over" hidden><div><b id="over-t"></b><span id="over-s"></span><div class="acts"><button class="btn" id="again" type="button">Watch again</button><button class="btn go" id="next-b" type="button" hidden>Next match</button></div><div class="upnext" id="upnext" hidden></div></div></div>
+      <div class="busy" id="busy" hidden><div><div class="spin"></div>Rebuilding the match…</div></div>
     </div>
 
     <div class="side">
@@ -179,7 +288,7 @@
         </div>
         <div class="track"><div class="marks" id="marks"></div>
           <input type="range" id="scrub" min="0" max="1" step="1" value="0" aria-label="Match time"></div>
-        <p class="keys"><kbd>Space</kbd> play / pause · <kbd>←</kbd> <kbd>→</kbd> skip 5 seconds</p>
+        <p class="keys"><kbd>Space</kbd> play / pause · <kbd>←</kbd> <kbd>→</kbd> skip 5 seconds<span id="keys-nav" hidden> · <kbd>N</kbd> <kbd>P</kbd> next / previous match</span></p>
       </section>
 
       <section class="panel" id="logp" aria-labelledby="h-log" hidden>
@@ -189,6 +298,8 @@
 
       <section class="panel decks" id="decks" aria-label="Decks" hidden></section>
     </div>
+  </div>
+    </main>
   </div>
 </div>
 
@@ -777,7 +888,7 @@ const ICON = { play: '<svg width="16" height="16" viewBox="0 0 24 24" fill="curr
 
 let T = null, meta = null, frames = null, events = null, deaths = null, life = null, labels = true;
 try { labels = localStorage.getItem("replay-names") !== "0"; } catch (e) {}
-let tick = 0, playing = false, speed = 1, hover = null, evIdx = -1, looping = false;
+let tick = 0, playing = false, speed = 1, hover = null, evIdx = -1, looping = false, onFinish = null, onPlay = null;
 const cv = $("cv"), board = createArena(cv);
 
 // A trace from the server is used as is. One written by gym/examples/record_trace.py
@@ -848,9 +959,9 @@ function setup() {
 
 // ---------- sizing ----------
 function resize() {
-  const narrow = innerWidth <= 860;
+  const narrow = innerWidth <= 860, room = $("stage").clientWidth;
   const maxH = Math.max(360, innerHeight - (narrow ? 120 : 96));
-  const maxW = narrow ? $("stage").clientWidth - 2 : Math.min(560, innerWidth * 0.44);
+  const maxW = narrow ? room - 2 : Math.min(560, room * 0.5);
   board.resize(maxW, maxH);
   draw();
 }
@@ -919,11 +1030,13 @@ function finish() {
   $("over-t").textContent = o === 3 ? "Draw" : (o === 1 ? m.p0 : m.p1) + " wins";
   $("over-s").textContent = `${m.crowns[0]}–${m.crowns[1]}` + (m.forfeit ? " · decided by forfeit" : o !== 3 && m.crowns[0] === m.crowns[1] ? " · decided on tower health" : "");
   $("over").hidden = false;
+  if (onFinish) onFinish();
 }
 function setPlaying(on) {
   if (on && tick >= meta.ticks) tick = 0;
   playing = on; if (on) $("over").hidden = true;
   $("play").innerHTML = on ? ICON.pause : ICON.play; $("play").setAttribute("aria-label", on ? "Pause" : "Play");
+  if (onPlay) onPlay(on);
 }
 function seek(t) { tick = Math.max(0, Math.min(meta.ticks, t)); $("over").hidden = true; evIdx = -2; draw(); hud(); }
 
@@ -937,7 +1050,7 @@ $("labels").addEventListener("click", () => { labels = !labels; $("labels").setA
   try { localStorage.setItem("replay-names", labels ? "1" : "0"); } catch (e) {} draw(); });
 $("log").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) seek(+b.dataset.t); });
 addEventListener("keydown", (e) => {
-  if (!meta || e.target.matches("input, button") && e.key === " ") return;
+  if (!meta || $("stage").hidden || e.target.matches("input:not([type=range])") || e.target.matches("input, button") && e.key === " ") return;
   if (e.key === " ") { e.preventDefault(); setPlaying(!playing); }
   else if (e.key === "ArrowRight") { e.preventDefault(); seek(tick + 5 * meta.tps); }
   else if (e.key === "ArrowLeft") { e.preventDefault(); seek(tick - 5 * meta.tps); }
@@ -954,19 +1067,158 @@ cv.addEventListener("pointermove", (e) => {
 });
 cv.addEventListener("pointerleave", () => { hover = null; $("tip").hidden = true; if (!playing) draw(); });
 
-function fail(title, text) {
-  $("msg").innerHTML = `<b>${esc(title)}</b><span>${esc(text)}</span><br><a class="btn" href="/">Back to the standings</a>`;
+// ---------- match browser: finds replays so nobody has to arrive with an id ----------
+const TPS = 20, POLL = 8000, WAIT = 6000;
+let list = [], cur = null, q = "", filt = "all", auto = true, skew = 0, newest = null, loadSeq = 0, timer = 0, sig = "", lastNote = null;
+const fresh = new Set();
+try { auto = localStorage.getItem("replay-autonext") !== "0"; } catch (e) {}
+
+const urlId = () => { const v = new URLSearchParams(location.search).get("id"); return v && /^\d{1,12}$/.test(v) ? +v : null; };
+const ago = (at) => {
+  const s = Math.max(0, Math.round((Date.now() + skew - at) / 1000));
+  if (s < 8) return "just now"; if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+};
+const close = (m) => m.outcome !== 3 && !m.forfeit && m.crowns[0] === m.crowns[1];
+const KEEP = { all: () => true, up: (m) => m.upset, k3: (m) => Math.max(m.crowns[0], m.crowns[1]) === 3, tb: (m) => m.outcome === 3 || close(m) };
+function shown() {
+  const k = q.trim().toLowerCase();
+  return list.filter((m) => KEEP[filt](m) && (!k || m.p0.toLowerCase().includes(k) || m.p1.toLowerCase().includes(k)));
 }
-async function load() {
-  const id = new URLSearchParams(location.search).get("id");
-  if (!id || !/^\d+$/.test(id)) return fail("No match selected", "Pick a match from the results list on the standings page.");
-  let res;
-  try { res = await fetch("/api/replay/" + id); } catch (e) { return fail("Can't reach the server", "Check your connection and try again."); }
-  if (res.status === 404) return fail("Replay not found", "This match has no saved replay.");
-  if (!res.ok) return fail("Replay failed to load", "The server could not rebuild this match.");
-  start(await res.json());
+// newer / older than the one on screen, within what the list currently shows
+function around() {
+  const v = shown(), i = v.findIndex((m) => m.id === cur);
+  if (i >= 0) return { newer: v[i - 1] || null, older: v[i + 1] || null, i, n: v.length };
+  return { newer: v.filter((m) => m.id > cur).pop() || null, older: v.find((m) => m.id < cur) || null, i: -1, n: v.length };
 }
-load();
+function renderList() {
+  const v = shown(), box = $("list");
+  if (!v.length) {
+    box.innerHTML = list.length ? `<li class="none"><b>Nothing here</b>No recent match fits that filter.</li>`
+      : `<li class="none"><b>No replays yet</b>Matches show up here as soon as two agents finish one.</li>`;
+  } else box.innerHTML = v.map((m) => {
+    const w0 = m.outcome === 1, w1 = m.outcome === 2, on = m.id === cur;
+    const tag = m.forfeit ? `<span class="badge ff">Forfeit</span>` : m.outcome === 3 ? `<span class="badge dr">Draw</span>`
+      : m.upset ? `<span class="badge up">Upset</span>` : Math.max(m.crowns[0], m.crowns[1]) === 3 ? `<span class="badge k3">King down</span>`
+      : close(m) ? `<span class="badge dr" title="Level on crowns; decided by tower health">Tiebreak</span>` : "";
+    const right = on ? `<span class="r np"><span class="eq${playing ? "" : " still"}" aria-hidden="true"><i></i><i></i><i></i></span>${playing ? "Playing" : "Open"}</span>`
+      : fresh.has(m.id) ? `<span class="r"><span class="dot" title="New since you opened this page"></span></span>` : "";
+    return `<li><a class="mt${on ? " cur" : ""}" href="/replay?id=${m.id}" data-id="${m.id}"${on ? ` aria-current="true"` : ""} aria-label="${esc(`${m.p0} ${m.crowns[0]}, ${m.p1} ${m.crowns[1]}`)}">
+      <div class="ms${w0 ? " won" : ""}"><i style="background:var(--p0)"></i><span class="n">${esc(m.p0)}</span><b>${m.crowns[0]}</b></div>
+      <div class="ms${w1 ? " won" : ""}"><i style="background:var(--p1)"></i><span class="n">${esc(m.p1)}</span><b>${m.crowns[1]}</b></div>
+      <div class="ft"><span>${ago(m.at)}</span>·<span>${clock(m.ticks, TPS)}</span>${tag}${right}</div></a></li>`;
+  }).join("");
+  const a = around();
+  $("newer").disabled = !a.newer; $("older").disabled = !a.older;
+  $("where").innerHTML = cur == null ? "" : `Match <b>#${cur}</b>` + (a.i >= 0 ? ` · ${a.i + 1} of ${a.n}` : "");
+  const n = $("rail-n"); n.hidden = !list.length; n.textContent = list.length;
+}
+function reveal() { const el = $("list").querySelector(".cur"); if (el) el.scrollIntoView({ block: "nearest" }); }
+
+function note(title, text, spin) {
+  if (meta) { playing = false; }
+  lastNote = spin ? null : [title, text];
+  $("stage").hidden = true; $("busy").hidden = true; $("msg").hidden = false;
+  const latest = list.find((m) => m.id !== cur);
+  $("msg").innerHTML = spin ? `<div class="spin"></div><span>${esc(text)}</span>`
+    : `<b>${esc(title)}</b><span>${esc(text)}</span><br>` + (latest ? `<button class="btn go" type="button" id="latest">Watch the latest match</button>` : `<a class="btn" href="/">Back to the standings</a>`);
+  const b = $("latest"); if (b) b.addEventListener("click", () => watch(latest.id, "push"));
+}
+async function watch(id, how) {
+  stopCount(); cur = id; fresh.delete(id);
+  if (how) history[how + "State"](null, "", "/replay?id=" + id);
+  renderList(); reveal(); drawer(false);
+  if (meta && !$("stage").hidden) { setPlaying(false); $("over").hidden = true; $("busy").hidden = false; }
+  else note("", "Rebuilding the match…", true);
+  const seq = ++loadSeq;
+  let res, data;
+  try { res = await fetch("/api/replay/" + id); } catch (e) { return seq === loadSeq && note("Can't reach the server", "Check your connection and try again."); }
+  if (seq !== loadSeq) return;
+  if (res.status === 404) return note("Replay not found", "Match #" + id + " has no saved replay.");
+  if (!res.ok) return note("Replay failed to load", "The server could not rebuild this match.");
+  try { data = await res.json(); } catch (e) { return seq === loadSeq && note("Replay failed to load", "The server sent something unreadable."); }
+  if (seq !== loadSeq) return;
+  $("busy").hidden = true; lastNote = null;
+  start(data);
+}
+
+async function refresh() {
+  let d;
+  try { const r = await fetch("/api/standings"); if (!r.ok) throw 0; d = await r.json(); } catch (e) { return false; }
+  skew = d.now - Date.now();
+  const got = d.matches.filter((m) => m.replay);
+  if (newest != null) for (const m of got) if (m.id > newest && m.id !== cur) fresh.add(m.id);
+  if (got.length) newest = Math.max(newest == null ? 0 : newest, got[0].id);
+  const sg = JSON.stringify(got); const same = sg === sig; sig = sg; list = got;
+  const live = $("live"), s = d.stats || {};
+  live.className = "live" + (s.live ? "" : " idle"); live.lastElementChild.textContent = s.live ? s.live + " live" : "Idle";
+  if (!same) renderList();
+  return true;
+}
+async function boot() {
+  const id = urlId();
+  if (id != null) watch(id, null);
+  const ok = await refresh();
+  if (id != null) { reveal(); if (lastNote && !$("msg").hidden) note(lastNote[0], lastNote[1]); return; }
+  if (list.length) return watch(list[0].id, "replace");
+  note(ok ? "No replays yet" : "Can't reach the server", ok ? "The newest match will start playing here as soon as one finishes." : "Check your connection and try again.");
+}
+setInterval(async () => {
+  if (document.hidden) return;
+  await refresh();
+  if (cur == null && list.length) watch(list[0].id, "replace");   // was waiting for the first match
+}, POLL);
+
+// ---------- what plays after the final whistle ----------
+function stopCount() { clearTimeout(timer); timer = 0; const cd = document.querySelector("#upnext .cd"); if (cd) cd.remove(); const c = $("stay"); if (c) c.remove(); }
+onFinish = () => {
+  const nx = around().older, up = $("upnext"), nb = $("next-b");
+  nb.hidden = up.hidden = !nx;
+  if (!nx) return;
+  const run = auto && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  up.innerHTML = `Up next<b>${esc(nx.p0)} vs ${esc(nx.p1)}</b>` + (run ? `<span class="cd"><i></i></span><button type="button" id="stay">Stay on this match</button>` : "");
+  if (!run) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => { const cd = up.querySelector(".cd"); if (cd) cd.classList.add("run"); }));
+  $("stay").addEventListener("click", stopCount);
+  timer = setTimeout(() => { if (!$("over").hidden) watch(nx.id, "push"); }, WAIT);
+};
+onPlay = (on) => { if (on) stopCount(); const eq = document.querySelector("#list .eq"); if (eq) { eq.classList.toggle("still", !on); eq.nextSibling.textContent = on ? "Playing" : "Open"; } };
+$("scrub").addEventListener("input", stopCount);
+$("next-b").addEventListener("click", () => { const nx = around().older; if (nx) watch(nx.id, "push"); });
+
+// ---------- controls ----------
+function drawer(on) {
+  $("rail").classList.toggle("open", on); $("scrim").classList.toggle("open", on);
+  $("open-rail").setAttribute("aria-expanded", String(on));
+}
+$("open-rail").addEventListener("click", () => { drawer(true); reveal(); });
+$("close-rail").addEventListener("click", () => drawer(false));
+$("scrim").addEventListener("click", () => drawer(false));
+$("list").addEventListener("click", (e) => {
+  const a = e.target.closest("a.mt"); if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+  e.preventDefault(); const id = +a.dataset.id;
+  if (id === cur && meta && !$("stage").hidden) return drawer(false);
+  watch(id, "push");
+});
+$("q").addEventListener("input", (e) => { q = e.target.value; renderList(); });
+$("filt").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; filt = b.dataset.f;
+  for (const x of $("filt").children) x.setAttribute("aria-pressed", String(x === b)); renderList(); });
+$("auto").setAttribute("aria-checked", String(auto));
+$("auto").addEventListener("click", () => { auto = !auto; $("auto").setAttribute("aria-checked", String(auto));
+  try { localStorage.setItem("replay-autonext", auto ? "1" : "0"); } catch (e) {} if (!auto) stopCount(); });
+const step = (k) => { const m = around()[k]; if (m) watch(m.id, "push"); };
+$("newer").addEventListener("click", () => step("newer"));
+$("older").addEventListener("click", () => step("older"));
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") return drawer(false);
+  if (e.target.matches("input") || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "n" || e.key === "N") step("older"); else if (e.key === "p" || e.key === "P") step("newer");
+});
+addEventListener("popstate", () => { const id = urlId(); if (id != null && id !== cur) watch(id, null); });
+setInterval(() => { if (!document.hidden && list.length) { const top = $("list").scrollTop; renderList(); $("list").scrollTop = top; } }, 30000);
+$("keys-nav").hidden = false;
+boot();
 </script>
 </body>
 </html>
