@@ -24,7 +24,7 @@ Environment variables:
 ## Protocol (JSON text frames over WebSocket)
 
 ```
-C→S  {"t":"join","name":"myagent","deck":["knight",...8...] | null}
+C→S  {"t":"join","name":"myagent","deck":["knight",...8...]}
      {"t":"leaderboard"}                         # query standings, then close
 S→C  {"t":"joined","name","rating"}
      {"t":"start","player":0|1,"opponent","seed"}

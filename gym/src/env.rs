@@ -77,6 +77,14 @@ impl Battle {
         Ok(())
     }
 
+    /// Check that `deck` is legal without starting a match: exactly 8 different,
+    /// playable card names with at most one champion. Raises ValueError saying
+    /// what is wrong; returns None if the deck is fine. `reset` applies the same
+    /// rules, so the competition server calls this when an agent joins.
+    fn check_deck(&self, deck: Vec<String>) -> PyResult<()> {
+        self.resolve_deck(&deck).map(|_| ())
+    }
+
     /// Advance one tick. Each action is (hand_slot, x, y) or None for no-op.
     /// Returns the outcome code: 0 running, 1 player0 win, 2 player1 win, 3 draw.
     #[pyo3(signature = (action0=None, action1=None))]
@@ -270,6 +278,23 @@ impl Battle {
                         "unknown card '{n}'"
                     )))
                 }
+            }
+        }
+        // Deck-legal cards only: towers, evolved variants and summon-only units
+        // (golemite, hut spawns, ...) exist in the library but are not cards.
+        for (n, &id) in names.iter().zip(out.iter()) {
+            if !self.eng.lib.deployable.contains(&id) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "'{n}' is not a playable card and cannot be put in a deck"
+                )));
+            }
+        }
+        // No duplicates: a deck is 8 different cards.
+        for (i, n) in names.iter().enumerate() {
+            if out[..i].contains(&out[i]) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "duplicate card '{n}': a deck must be 8 different cards"
+                )));
             }
         }
         // [champ] enforce the one-champion-per-deck rule

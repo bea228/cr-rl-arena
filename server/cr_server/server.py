@@ -15,7 +15,8 @@ Env:
     CR_DECISION_EVERY    ticks/decision    (default 4 => 5 Hz; core tick stays 20 Hz)
 
 Protocol (JSON text frames)
-  C->S  {"t":"join","name":str,"deck":[8 card names]|null}
+  C->S  {"t":"join","name":str,"deck":[8 card names]}   (deck required; an
+        illegal deck is refused with {"t":"error","msg":...} and the socket closed)
         {"t":"leaderboard"}                      (query then close)
   S->C  {"t":"joined","name","rating"}
         {"t":"start","player":0|1,"opponent","seed"}
@@ -78,6 +79,7 @@ class Arena:
         self.idle: asyncio.Queue[WsAgent] = asyncio.Queue()
         self.replays_dir = os.path.join(DATA_DIR, "replays")
         os.makedirs(self.replays_dir, exist_ok=True)
+        self._deck_checker = cr_sim.Battle()  # only used to validate decks at join
 
     async def handler(self, ws):
         try:
@@ -93,9 +95,13 @@ class Arena:
             return
 
         name = str(msg.get("name") or f"anon-{random.randint(1000,9999)}")
+        # A deck is required and is validated here, at join, so a missing or illegal
+        # deck is refused to the agent that sent it instead of failing later inside
+        # a match (which used to void the game for its opponent as well).
         deck = msg.get("deck")
-        if deck is not None and (not isinstance(deck, list) or len(deck) != 8):
-            await ws.send(json.dumps({"t": "error", "msg": "deck must be 8 card names or null"}))
+        problem = self._deck_problem(deck)
+        if problem:
+            await ws.send(json.dumps({"t": "error", "msg": problem}))
             return
         agent = WsAgent(ws, name, deck)
         await agent.send({"t": "joined", "name": name,
@@ -105,6 +111,18 @@ class Arena:
             await ws.wait_closed()
         finally:
             agent.alive = False
+
+    def _deck_problem(self, deck):
+        """Why `deck` can't be played, or None if it is legal."""
+        if deck is None:
+            return "a deck is required: send 8 card names"
+        if not isinstance(deck, list) or not all(isinstance(c, str) for c in deck):
+            return "deck must be a list of 8 card names"
+        try:
+            self._deck_checker.check_deck(deck)  # same rules Battle.reset enforces
+        except ValueError as e:
+            return f"invalid deck: {e}"
+        return None
 
     async def matchmaker(self):
         while True:
@@ -119,6 +137,11 @@ class Arena:
                 return ag
 
     async def _play(self, a: WsAgent, b: WsAgent):
+        # Seats are drawn at random for every match: `a` is player 0 (bottom) from
+        # here on. Queue order used to decide it, so with two agents connected the
+        # same one was player 0 in every game.
+        if random.random() < 0.5:
+            a, b = b, a
         try:
             seed = random.getrandbits(63)
             await a.send({"t": "start", "player": 0, "opponent": b.name, "seed": seed})

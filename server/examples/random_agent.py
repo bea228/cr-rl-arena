@@ -14,6 +14,10 @@ URL = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8765"
 NAME = sys.argv[2] if len(sys.argv) > 2 else f"random-{random.randint(100, 999)}"
 
 
+# A deck is required to join: 8 different playable cards, at most one champion.
+DECK = ["knight", "archers", "giant", "musketeer", "valkyrie", "minions", "wizard", "minipekka"]
+
+
 def policy(obs):
     """obs: {player, elixir, hand, hand_cost, next_card, legal, crowns, entities, ...}
     Return [slot, x, y] to deploy hand[slot] at tile (x,y), or None to wait."""
@@ -30,7 +34,7 @@ def policy(obs):
 
 async def main():
     async with websockets.connect(URL) as ws:
-        await ws.send(json.dumps({"t": "join", "name": NAME, "deck": None}))
+        await ws.send(json.dumps({"t": "join", "name": NAME, "deck": DECK}))
         async for raw in ws:
             msg = json.loads(raw)
             t = msg.get("t")
