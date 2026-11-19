@@ -62,20 +62,42 @@ def test_base_policy_contract():
 
 
 def test_random_policy_actions_are_valid(observations):
+    from bot import placements
+
     pol = RandomPolicy(seed=7)
     pol.reset(DECK)
-    results = [pol.act(obs) for obs in observations]
-    for obs, a in zip(observations, results):
-        if a is None:
+    indices = []
+    for obs in observations:
+        i = pol.act_index(obs)
+        indices.append(i)
+        assert 0 <= i < placements.N_ACTIONS
+        assert placements.mask(obs)[i], placements.mask_reason(obs, i)
+        a = placements.decode(i, obs)
+        if i == 0:
+            assert a is None
             continue
         assert isinstance(a, list) and len(a) == 3
         slot, x, y = a
         assert type(slot) is int and 0 <= slot <= 3
         assert obs["legal"][slot]
-        assert isinstance(x, float) and 2.0 <= x <= 16.0
-        assert isinstance(y, float) and 9.0 <= y <= 14.0
-    assert any(a is None for a in results)
-    assert any(a is not None for a in results)
+        assert isinstance(x, float) and isinstance(y, float)
+    waits = indices.count(0)
+    assert 0 < waits < len(indices)
+    assert waits >= 0.4 * len(indices)  # 60% wait plus "no legal move" waits
+
+
+def test_random_policy_act_matches_act_index(observations):
+    a, b = RandomPolicy(seed=5), RandomPolicy(seed=5)
+    from bot import placements
+
+    for o in observations:
+        assert a.act(o) == placements.decode(b.act_index(o), o)
+
+
+def test_random_policy_waits_when_nothing_legal(observations):
+    pol = RandomPolicy(seed=9)
+    o = {**observations[0], "legal": [False] * 4}
+    assert all(pol.act_index(o) == 0 for _ in range(50))
 
 
 def test_random_policy_deterministic(observations):
@@ -85,14 +107,14 @@ def test_random_policy_deterministic(observations):
     assert [a.act(o) for o in observations] == [b.act(o) for o in observations]
 
 
-def test_random_policy_act_index_not_yet():
-    with pytest.raises(NotImplementedError):
-        RandomPolicy(seed=1).act_index({})
+def test_policy_module_does_not_import_placements_at_top():
+    """W1: bot.policy imports placements lazily, inside methods."""
+    import ast
 
-
-def test_policy_imports_without_placements():
-    mod = importlib.import_module("bot.policy")
-    assert hasattr(mod, "Policy")
-    if os.path.exists(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "placements.py")):
-        pytest.skip("bot/placements.py has landed; absence check no longer applies")
-    assert importlib.util.find_spec("bot.placements") is None
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "policy.py")
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    names = [a.name for n in top for a in n.names] + [getattr(n, "module", "") or "" for n in top]
+    assert not any("placements" in n for n in names)
+    assert hasattr(importlib.import_module("bot.policy"), "Policy")

@@ -36,10 +36,11 @@ class Policy:
 class RandomPolicy(Policy):
     """Random legal moves, reproducible from ``seed``.
 
-    Until bot.placements lands this mirrors server/examples/random_agent.py:
-    wait 60% of the time, otherwise a random legal slot at a uniform point
-    on our own side (x in [2, 16], y in [9, 14]).
+    Waits with probability 0.6; otherwise picks uniformly among the non-wait
+    indices that ``placements.mask(obs)`` allows (wait if there are none).
     """
+
+    WAIT_PROB = 0.6
 
     def __init__(self, seed=None):
         self.rng = random.Random(seed)
@@ -49,17 +50,9 @@ class RandomPolicy(Policy):
         self.deck = list(deck)
 
     def act_index(self, obs):
-        # TODO impl-4 (W2): return a random true entry of placements.mask(obs).
-        raise NotImplementedError(
-            "RandomPolicy.act_index switches to a random true entry of "
-            "placements.mask(obs) in impl-4"
-        )
+        from bot import placements  # imported here so bot.policy loads without placements
 
-    def act(self, obs):
-        # TODO impl-4 (W2): drop this override and use Policy.act via act_index.
-        legal = obs.get("legal", [])
-        playable = [i for i, ok in enumerate(legal) if ok]
-        if not playable or self.rng.random() < 0.6:
-            return None
-        slot = self.rng.choice(playable)
-        return [int(slot), float(self.rng.uniform(2.0, 16.0)), float(self.rng.uniform(9.0, 14.0))]
+        if self.rng.random() < self.WAIT_PROB:
+            return 0
+        choices = placements.legal_indices(obs)
+        return self.rng.choice(choices) if choices else 0
