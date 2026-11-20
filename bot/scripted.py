@@ -68,6 +68,24 @@ BEHIND = ("def_L", "def_R")
 
 # --- rules ---------------------------------------------------------------
 
+def _raw(name: str) -> dict:
+    try:
+        return cards.raw(name)
+    except KeyError:
+        return {}
+
+
+RANGED_MIN = 5.0  # archers 5, wizard 5.5, musketeer 6
+
+
+def ranged(name: str) -> bool:
+    return float(_raw(name).get("range", 0) or 0) >= RANGED_MIN
+
+
+def invisible(name: str) -> bool:
+    return bool(_raw(name).get("invisible"))
+
+
 def defending_hp(st: state.State, lane: str) -> int:
     """st.defense[lane] minus our win_condition units (they only target buildings, so they
     walk past threats; counting them kept the defend rule silent while a tower fell)."""
@@ -80,14 +98,24 @@ def defending_hp(st: state.State, lane: str) -> int:
 def defend_index(obs: dict, st: state.State) -> int | None:
     lane = max(("L", "R"), key=lambda ln: (st.threat[ln], -st.my_tower_hp[ln], ln == "L"))
     threat, defense = st.threat[lane], defending_hp(st, lane)
+    threats = [u for u in st.enemy if u.lane == lane and u.y < state.THREAT_Y]
+    ghost = any(invisible(u.name) for u in threats)
+    if ghost:
+        # in practice only ranged units hit an invisible attacker, so melee hp doesn't count as cover
+        defense = sum(u.hp for u in st.mine if u.lane == lane and u.y < state.THREAT_Y and ranged(u.name))
     if not (threat > 0 and threat > DEFEND_RATIO * defense):
         return None
-    threats = [u for u in st.enemy if u.lane == lane and u.y < state.THREAT_Y]
     cand = _non_spells(obs)
     if any(u.flying for u in threats):
         cand = [i for i in cand if _role(obs["hand"][i]).get("hits_air")]
     if not cand:
         return None
+    if ghost:
+        # Royal Ghost: troops can only lock on during the short reveal after each of its hits,
+        # so melee defenders walk past it; ranged ones in range of the tower pick it up (J2 notes).
+        far = [i for i in cand if ranged(obs["hand"][i])]
+        if far:
+            cand = far
     if len(threats) >= 3:
         splash = [i for i in cand if _role(obs["hand"][i]).get("splash")]
         if splash:

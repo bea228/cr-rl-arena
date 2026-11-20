@@ -150,3 +150,43 @@ def test_spell_on_cluster_only_with_two_units():
     assert i is not None and placements.split(i) == (0, P["cluster"])
     one = _with(obs, [_unit(9.0, 20.0, 90), _unit(16.0, 28.0, 91)], hand)
     assert spell_index(one, state.parse(one)) is None
+
+
+GHOST_OPP = ["royal_ghost", "knight", "archers", "giant", "musketeer", "valkyrie", "minions", "wizard"]
+
+
+def test_defend_ranged_vs_royal_ghost_despite_melee_cover():
+    """J2 fix: a Royal Ghost is invisible except right after each hit, so melee units in the lane
+    walk past it and it takes the tower alone. v0 counted our knight's hp as cover and stayed
+    silent; now only ranged units count against it and the defender must be ranged."""
+    from bot import scripted_v0
+    from bot.scripted import ranged
+
+    for seed in range(1, 400):
+        b = cr_sim.Battle()
+        b.reset(seed, DECK, GHOST_OPP)
+        h0, h1 = b.view(0).observe()["hand"], b.view(1).observe()["hand"]
+        if "knight" in h0 and "royal_ghost" in h1 and any(ranged(n) for n in h0 if n != "knight"):
+            break
+    else:
+        pytest.fail("no seed with knight + a ranged card for us and royal_ghost for them")
+    for _ in range(60):
+        b.step(None, None)
+    b.step((h0.index("knight"), 3.5, 9.5), (h1.index("royal_ghost"), 3.5, 14.5))
+    v0 = b.view(0)
+    for _ in range(300):
+        b.step(None, None)
+        obs = v0.observe()
+        st = state.parse(obs)
+        ghosts = [u for u in st.enemy if u.name == "royal_ghost"]
+        if ghosts and ghosts[0].y < 17 and ghosts[0].lane == "L":
+            break
+    else:
+        pytest.fail("enemy royal_ghost never entered our L lane")
+    assert any(u.name == "knight" and u.lane == "L" for u in st.mine)
+    assert scripted_v0.defend_index(obs, st) is None  # v0: knight hp "covers" the ghost
+    i = defend_index(obs, st)
+    assert i is not None and placements.mask(obs)[i]
+    slot, p = placements.split(i)
+    assert ranged(obs["hand"][slot])
+    assert p == P["def_L"]
