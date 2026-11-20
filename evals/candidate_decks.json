@@ -1,0 +1,12 @@
+[
+ {"name": "default", "deck": ["knight", "archers", "giant", "musketeer", "valkyrie", "minions", "wizard", "minipekka"]},
+ {"name": "A default + spells", "deck": ["giant", "musketeer", "valkyrie", "minions", "knight", "archers", "fireball", "zap"]},
+ {"name": "B hog cycle", "deck": ["hogrider", "musketeer", "valkyrie", "knight", "skeletons", "archers", "fireball", "the_log"]},
+ {"name": "C giant beatdown", "deck": ["giant", "musketeer", "minipekka", "babydragon", "archers", "knight", "arrows", "fireball"]},
+ {"name": "D royal giant", "deck": ["royal_giant", "musketeer", "valkyrie", "minions", "knight", "archers", "fireball", "zap"]},
+ {"name": "E balloon", "deck": ["balloon", "babydragon", "musketeer", "knight", "minions", "archers", "arrows", "fireball"]},
+ {"name": "F giant wizard", "deck": ["giant", "wizard", "valkyrie", "archers", "knight", "minions", "fireball", "zap"]},
+ {"name": "G ram rider", "deck": ["ram_rider", "musketeer", "valkyrie", "knight", "archers", "minions", "fireball", "zap"]},
+ {"name": "H battle ram", "deck": ["battle_ram", "babydragon", "musketeer", "valkyrie", "knight", "archers", "arrows", "fireball"]},
+ {"name": "I hog wizard", "deck": ["hogrider", "wizard", "knight", "minions", "archers", "minipekka", "fireball", "zap"]}
+]

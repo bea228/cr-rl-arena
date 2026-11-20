@@ -61,3 +61,53 @@ Keep rule: mean up ≥ 0.7 points and neither seed drops.
 Stopped after 6 attempts. Worst opposing deck (#3, ghost deck): 16% / 20% → 48% / 44%.
 Next ideas (not tried): defend at king_pull after a princess tower falls; a per-lane cooldown so
 defend doesn't double-drop while the first card is still deploying.
+
+## Deck choice (C13 + B16 + C14)
+
+Candidates: `evals/candidate_decks.json` (10 decks: the default baseline, A–E hand-picked, F–I new).
+All of A–E already met C13 with `cards.role`/`elixir` (air and splash counted on troops only), so no
+swaps. The baseline breaks C13 (no spell, avg elixir 3.875). F giant wizard = default with
+musketeer/minipekka → fireball/zap; G ram rider and H battle ram = deck A around another win condition;
+I hog wizard. No held-out cards, mirror, champions or placement buildings.
+
+`python -m evals.deck_rr`: scripted bot on the candidate deck vs random, scripted and scripted_v0, each
+opponent rotating through the 40 gauntlet decks. Score = mean − population std across opponents.
+Wall time 181 s on 16 cores (screen 76 s, final 105 s).
+
+Phase 1 screen: 300 games per opponent, seed 0
+
+| deck | avg elx | vs random | vs scripted | vs v0 | mean | lowest | score | ignored |
+|---|---|---|---|---|---|---|---|---|
+| B hog cycle | 3.12 | 87.7% | 72.7% | 72.7% | 77.7% | 72.7% | 0.706 | 0.00% |
+| default | 3.88 | 92.3% | 72.0% | 72.0% | 78.8% | 72.0% | 0.692 | 0.00% |
+| A default + spells | 3.50 | 88.0% | 70.0% | 70.0% | 76.0% | 70.0% | 0.675 | 0.00% |
+| D royal giant | 3.62 | 86.7% | 67.0% | 67.0% | 73.6% | 67.0% | 0.643 | 0.00% |
+| I hog wizard | 3.50 | 83.3% | 64.7% | 64.7% | 70.9% | 64.7% | 0.621 | 0.00% |
+| E balloon | 3.62 | 81.3% | 63.7% | 63.7% | 69.6% | 63.7% | 0.612 | 0.00% |
+| F giant wizard | 3.62 | 82.3% | 62.7% | 62.7% | 69.2% | 62.7% | 0.600 | 0.00% |
+| H battle ram | 3.62 | 80.3% | 59.3% | 59.3% | 66.3% | 59.3% | 0.564 | 0.00% |
+| G ram rider | 3.50 | 84.3% | 58.3% | 58.3% | 67.0% | 58.3% | 0.547 | 0.00% |
+| C giant beatdown | 3.75 | 78.3% | 50.0% | 50.0% | 59.4% | 50.0% | 0.461 | 0.00% |
+
+Phase 2 final: top 3 + baseline, 1000 games per opponent, seed 50000
+
+| deck | avg elx | vs random | vs scripted | vs v0 | mean | lowest | score | ignored |
+|---|---|---|---|---|---|---|---|---|
+| default | 3.88 | 94.2% | 74.0% | 74.0% | 80.7% | 74.0% | 0.712 | 0.00% |
+| B hog cycle | 3.12 | 88.6% | 72.3% | 72.3% | 77.7% | 72.3% | 0.700 | 0.00% |
+| A default + spells | 3.50 | 86.8% | 63.4% | 63.4% | 71.2% | 63.4% | 0.602 | 0.00% |
+| D royal giant | 3.62 | 86.2% | 62.4% | 62.4% | 70.3% | 62.4% | 0.591 | 0.00% |
+
+**Choice: keep the default deck** (`bot/decks/tournament.json` = `default.json`). It has the highest
+final score (0.712 vs B hog cycle 0.700) and the best win rate vs random (94.2%); B led the screen but
+lost 5.6 points vs random in the final. Check: `evals.gauntlet --a scripted --b random --games 1000
+--a-deck bot/decks/tournament.json` → 93.4% (seed 0, same as default.json), ignored 0.00%.
+
+Caveats:
+- vs scripted and vs v0 are identical in every row. Not a bug: the two bots differ only in the
+  royal_ghost defense rule, and no candidate deck has royal_ghost, so they play the same games. In
+  effect there are two opponents and the mirror is weighted twice; scoring with only random and
+  scripted still ranks default (0.740) above B (0.723).
+- Adding spells (A vs default) cost 5–10 points. Likely (not measured) because the spell rule fires rarely and a spell in hand is a
+  card that can't defend, which makes the elixir-starvation losses worse. Worth revisiting after the
+  defense fixes, and once the learned bot (bc_v1 / snapshots in the original B16) exists to test against.
