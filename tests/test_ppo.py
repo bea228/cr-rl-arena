@@ -44,6 +44,10 @@ def test_tiny_run_writes_log_last_and_snapshots(tiny_run):
     for r in rows1:  # win-rate columns are filled exactly on --log-every updates
         assert (r["n_scripted"] != "") == (int(r["update"]) % 2 == 0)
     assert rows1[0]["warmup"] == "1"
+    assert float(rows1[0]["kl_bc"]) < 1e-4  # learner starts as bc_v1: KL to BC ~ 0
+    assert float(rows1[0]["kl_bc_coef"]) == 0.0 and float(rows1[-1]["kl_bc_coef"]) > 0.0
+    cfg = __import__("json").loads((RUN_DIR / "run_config.json").read_text())
+    assert cfg[0]["args"]["kl_bc"] == 0.1 and cfg[0]["args"]["ent_coef"] == 0.001
     snaps = sorted(RUN_DIR.glob("snap_*.pt"))
     assert snaps
     pol = LearnedPolicy(str(snaps[0]))  # snapshots load through LearnedPolicy

@@ -4,11 +4,14 @@
     python -m train.ppo --device cuda --hours 9 --run thu --workers 14
     python -m train.ppo --run thu --resume runs/thu/last.pt --hours 2
 
-256 envs x 128 steps per update, discount 0.997, GAE 0.95, clip 0.2, entropy 0.01,
-lr 2.5e-4 (linear to 0), 4 epochs, minibatch 4,096, value loss 0.5 with clipping,
-grad-norm clip 0.5, approx-KL early stop at 0.03. The first 20 updates train only the value
-head (BC never trained it). Reward shaping falls linearly from 1.0 to 0.1 over the planned
-updates (planned = time budget / measured update time, fixed after 5 updates).
+256 envs x 128 steps per update, discount 0.997, GAE 0.95, clip 0.2, 4 epochs, minibatch
+4,096, value loss 0.5 with clipping, grad-norm clip 0.5, approx-KL early stop at 0.03.
+Stabilised defaults (the handoff's settings drifted below bc_v1 in a 20-minute CPU run):
+entropy 0.001 (handoff 0.01), lr 1e-4 linear to 0 (handoff 2.5e-4), 60 value-head-only
+warm-up updates (handoff 20), reward shaping 0.5 -> 0.1 (handoff 1.0 -> 0.1), and a
+KL(pi_bc || pi_theta) penalty to a frozen bc_v1 with coefficient --kl-bc 0.1, annealed to
+kl_bc/4. "Over the run" = planned updates (time budget / measured update time, fixed after
+5 updates). Run settings go to runs/<run>/run_config.json and into last.pt.
 
 Writes runs/<run>/log.csv (one row per update; win rates per opponent type every
 --log-every updates), runs/<run>/last.pt every --log-every updates (for --resume) and
@@ -42,7 +45,8 @@ from train.league import KINDS, League  # noqa: E402
 
 LOG_FIELDS = [
     "update", "wall_s", "decisions_per_s", "policy_loss", "value_loss", "entropy", "approx_kl",
-    "kl_stop", "clip_frac", "lr", "shape", "mean_ep_reward", "episodes", "warmup", "planned_updates",
+    "kl_stop", "clip_frac", "lr", "shape", "kl_bc", "kl_bc_coef", "ent_coef", "mean_ep_reward", "episodes",
+    "warmup", "planned_updates",
 ] + [f"{p}{k}" for k in KINDS for p in ("wr_", "n_")] + [f"{p}{k}" for k in KINDS for p in ("wrd_", "nd_")]
 
 
@@ -63,16 +67,20 @@ def parse_args(argv=None):
     ap.add_argument("--gamma", type=float, default=0.997)
     ap.add_argument("--gae", type=float, default=0.95)
     ap.add_argument("--clip", type=float, default=0.2)
-    ap.add_argument("--ent", type=float, default=0.01)
+    ap.add_argument("--ent-coef", "--ent", dest="ent_coef", type=float, default=0.001, help="entropy bonus")
     ap.add_argument("--vf", type=float, default=0.5)
-    ap.add_argument("--lr", type=float, default=2.5e-4)
+    ap.add_argument("--lr", type=float, default=1e-4, help="annealed linearly to 0")
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--minibatch", type=int, default=4096)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
     ap.add_argument("--target-kl", type=float, default=0.03)
-    ap.add_argument("--warmup", type=int, default=20, help="value-head-only updates")
-    ap.add_argument("--shape-start", type=float, default=1.0)
+    ap.add_argument("--value-warmup", "--warmup", dest="warmup", type=int, default=60,
+                    help="updates of value-head-only training")
+    ap.add_argument("--shape-start", type=float, default=0.5)
     ap.add_argument("--shape-end", type=float, default=0.1)
+    ap.add_argument("--kl-bc", type=float, default=0.1,
+                    help="coefficient on KL(pi_bc || pi_theta), annealed linearly to kl_bc/4")
+    ap.add_argument("--bc-path", default="models/bc_v1.pt", help="frozen reference policy for --kl-bc")
     ap.add_argument("--snap-every", type=int, default=50)
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--threads", type=int, default=4, help="torch CPU threads in the main process")
@@ -167,6 +175,11 @@ def main(argv=None) -> dict:
         league = League(run_dir, bc_path=REPO / "models" / "bc_v1.pt")
         start_update = 0
     net.to(device)
+    bc_net = None
+    if args.kl_bc > 0:
+        bc_net = model.load(_resolve(args.bc_path)).to(device).eval()
+        for p_ in bc_net.parameters():
+            p_.requires_grad_(False)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
     vopt = torch.optim.Adam(net.value.parameters(), lr=args.lr, eps=1e-5)
     if ckpt is not None:
@@ -179,6 +192,10 @@ def main(argv=None) -> dict:
     if league.snapshots:
         env.set_snapshots(league.snapshots)
     log = Logger(run_dir / "log.csv")
+    cfg_path = run_dir / "run_config.json"
+    cfgs = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else []
+    cfgs.append({"start_update": start_update, "device": device, "args": vars(args)})
+    cfg_path.write_text(json.dumps(cfgs, indent=1), encoding="utf-8")
     print(f"run {run_dir} | device {device} | envs {N} x steps {T} | workers {env.workers} | "
           f"budget {budget / 60:.1f} min | start update {start_update} | snapshots {len(league.snapshots)}", flush=True)
 
@@ -225,6 +242,7 @@ def main(argv=None) -> dict:
             for g in opt.param_groups + vopt.param_groups:
                 g["lr"] = lr
             warm = update < args.warmup
+            kl_coef = args.kl_bc * (1.0 - 0.75 * frac)
 
             # --- rollout ---
             net.eval()
@@ -282,6 +300,16 @@ def main(argv=None) -> dict:
                     v_clip = old_v + (v - old_v).clamp(-args.clip, args.clip)
                     vloss = 0.5 * torch.max((v - ret_t) ** 2, (v_clip - ret_t) ** 2).mean()
                     ent = dist.entropy().mean()
+                    if bc_net is not None:
+                        with torch.no_grad():
+                            bc_logits, _ = bc_net(x)
+                        legal = x["mask"] > 0
+                        logp_all = torch.log_softmax(logits, -1)
+                        bc_logp = torch.log_softmax(bc_logits, -1)
+                        kl_bc = torch.where(legal, bc_logp.exp() * (bc_logp - logp_all),
+                                            torch.zeros_like(logp_all)).sum(-1).mean()
+                    else:
+                        kl_bc = torch.zeros((), device=device)
                     with torch.no_grad():
                         approx_kl = float(((ratio - 1) - log_ratio).mean())
                         clipf = float(((ratio - 1).abs() > args.clip).float().mean())
@@ -294,13 +322,13 @@ def main(argv=None) -> dict:
                         torch.nn.utils.clip_grad_norm_(net.value.parameters(), args.max_grad_norm)
                         vopt.step()
                     else:
-                        loss = pg + args.vf * vloss - args.ent * ent
+                        loss = pg + args.vf * vloss - args.ent_coef * ent + kl_coef * kl_bc
                         opt.zero_grad(set_to_none=True)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
                         opt.step()
                     for k, val in (("pg", float(pg.detach())), ("vl", float(vloss.detach())), ("ent", float(ent.detach())),
-                                   ("kl", approx_kl), ("clip", clipf)):
+                                   ("kl", approx_kl), ("clip", clipf), ("klbc", float(kl_bc.detach()))):
                         stats[k].append(val)
                     if not warm and approx_kl > args.target_kl:
                         kl_stop = 1
@@ -320,12 +348,14 @@ def main(argv=None) -> dict:
                 "policy_loss": float(np.mean(stats["pg"])), "value_loss": float(np.mean(stats["vl"])),
                 "entropy": float(np.mean(stats["ent"])), "approx_kl": float(np.mean(stats["kl"])),
                 "kl_stop": kl_stop, "clip_frac": float(np.mean(stats["clip"])), "lr": lr, "shape": shape,
+                "kl_bc": float(np.mean(stats["klbc"])), "kl_bc_coef": kl_coef if not warm else 0.0,
+                "ent_coef": args.ent_coef,
                 "mean_ep_reward": float(np.mean([e["return"] for e in finished])) if finished else "",
                 "episodes": len(finished), "warmup": int(warm), "planned_updates": planned or "",
             }
             line = (f"u{update:4d} {wall / 60:6.1f}m {row['decisions_per_s']:7.0f}/s roll {t_roll:4.1f}s "
                     f"pg {row['policy_loss']:+.4f} vl {row['value_loss']:.4f} ent {row['entropy']:.3f} "
-                    f"kl {row['approx_kl']:.4f}{'!' if kl_stop else ''} lr {lr:.2e} shape {shape:.2f} "
+                    f"kl {row['approx_kl']:.4f}{'!' if kl_stop else ''} klbc {row['kl_bc']:.4f} lr {lr:.2e} shape {shape:.2f} "
                     f"eps {len(finished)}{' warm' if warm else ''}")
             if update % args.log_every == 0:
                 wr = win_rates(window, league)
