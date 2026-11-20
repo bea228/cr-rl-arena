@@ -10,6 +10,7 @@ import math
 
 from bot import cards, placements, state
 from bot.policy import Policy
+from bot.trackers import Trackers
 
 P = placements.NAMES
 OPENING_TICKS = 200
@@ -223,11 +224,14 @@ class ScriptedPolicy(Policy):
         self.fires = {name: 0 for name, _ in RULES} | {"wait": 0}
         self.mask_fallbacks = 0
         self.last_rule = None
+        self.trackers = Trackers()
 
     def reset(self, deck):
         self.deck = list(deck)
+        self.trackers = Trackers()
 
     def act_index(self, obs):
+        self.trackers.update(obs)  # C8 hook: no rule reads the trackers yet
         st = state.parse(obs)
         chosen, rule = 0, "wait"
         for name, fn in RULES:
