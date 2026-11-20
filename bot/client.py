@@ -3,6 +3,10 @@
     ./.venv/Scripts/python -m bot.client --url ws://localhost:8765 --name dev-scripted \
         --policy scripted --deck bot/decks/default.json
 
+--policy is scripted | random | learned, or any evals.policies spec with a ":" in it
+(class:bot.scripted_v0.ScriptedPolicyV0, learned:models/x.pt). --summary-json <path> keeps a small
+JSON of session totals, rewritten atomically after every result.
+
 Built from server/examples/random_agent.py. Every obs gets exactly one reply,
 tagged with the obs's own tick; the policy is consulted only on decision ticks
 (tick % DECIDE_EVERY == 0) and any error there becomes a null move. The
@@ -77,7 +81,13 @@ def load_deck(arg: str, seed: int = 0) -> list[str]:
     return list(deck)
 
 
+def _policy_error(msg: str):
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(2)
+
+
 def build_policy(kind: str, seed: int = 0, model: str | None = None) -> Policy:
+    """scripted | random | learned (with --model), or an evals.policies spec containing ":"."""
     if kind == "scripted":
         from bot.scripted import ScriptedPolicy
 
@@ -96,7 +106,15 @@ def build_policy(kind: str, seed: int = 0, model: str | None = None) -> Policy:
         except ModuleNotFoundError as e:
             raise SystemExit(f"--policy learned is not available yet (bot/learned.py missing: {e})")
         return learned.LearnedPolicy(model)
-    raise SystemExit(f"unknown policy {kind!r}")
+    if isinstance(kind, str) and ":" in kind:
+        from evals.policies import make_policy
+
+        try:
+            return make_policy(kind, seed=seed)
+        except (ValueError, ImportError) as e:
+            _policy_error(f"cannot build policy {kind!r}: {e}")
+    _policy_error(f"unknown policy {kind!r}: use scripted, random, learned, "
+                  "or a spec like class:<module>.<Class> or learned:<path>")
 
 
 def sanitise(action) -> list | None:
@@ -117,8 +135,11 @@ def sanitise(action) -> list | None:
 class Client:
     """Protocol state for one process. ``handle(msg)`` returns the reply dict or None."""
 
-    def __init__(self, policy: Policy, deck: list[str], name: str = "bot"):
+    def __init__(self, policy: Policy, deck: list[str], name: str = "bot",
+                 summary_path: str | None = None, policy_label: str | None = None):
         self.policy = policy
+        self.summary_path = summary_path
+        self.policy_label = policy_label
         self.deck = list(deck)
         self.name = name
         self.matches_done = 0
@@ -128,6 +149,9 @@ class Client:
         self._seen_errors: set[str] = set()
         self.slowest_ms = 0.0
         self.session_last_action = Counter()
+        self.session_decisions = 0
+        self.session_slow = 0
+        self.session_errors = 0
         self.policy.reset(self.deck)  # in case a match starts before "start" is seen
         self._new_match(None)
 
@@ -149,11 +173,13 @@ class Client:
         if tick % DECIDE_EVERY != 0:
             return None
         self.decisions += 1
+        self.session_decisions += 1
         t0 = time.perf_counter()
         try:
             raw = self.policy.act(obs)
         except Exception as e:
             self.errors += 1
+            self.session_errors += 1
             key = f"{type(e).__name__}: {e}"
             if key not in self._seen_errors:
                 self._seen_errors.add(key)
@@ -164,11 +190,13 @@ class Client:
             self.slowest_ms = max(self.slowest_ms, ms)
             if ms > SLOW_MS:
                 self.slow += 1
+                self.session_slow += 1
                 log.warning("slow decision at tick %s: %.0f ms", tick, ms)
         try:
             action = sanitise(raw)
         except Exception as e:
             self.errors += 1
+            self.session_errors += 1
             log.error("bad action %r at tick %s (%s); sending null", raw, tick, e)
             return None
         if action is not None:
@@ -237,15 +265,64 @@ class Client:
             if self.matches_done % 10 == 0:
                 self.log_session()
             self._new_match(None)
+            self.write_summary()
         elif t == "aborted":
             log.warning("match void: %s", msg.get("reason"))
             self.session["aborted"] += 1
             self._new_match(None)
+            self.write_summary()
         elif t == "error":
             log.error("server error: %s", msg.get("msg"))
         else:
             log.warning("unknown message type %r", t)
         return None
+
+    def session_totals(self) -> dict:
+        la = self.session_last_action
+        return {
+            "name": self.name,
+            "policy": self.policy_label,
+            "matches": self.matches_done,
+            "wins": self.session["win"],
+            "losses": self.session["loss"],
+            "draws": self.session["draw"],
+            "aborted": self.session["aborted"],
+            "rating": self.rating,
+            "last_action": dict(sorted(la.items())),
+            "ignored": sum(n for k, n in la.items() if k not in NOT_IGNORED),
+            "decisions": self.session_decisions,
+            "slow_decisions": self.session_slow,
+            "policy_errors": self.session_errors,
+            "slowest_ms": round(self.slowest_ms, 1),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "unix_time": time.time(),
+        }
+
+    def write_summary(self) -> None:
+        """Overwrite --summary-json atomically (temp file + os.replace). Never raises."""
+        if not self.summary_path:
+            return
+        path = os.path.abspath(self.summary_path)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(self.session_totals(), f, indent=1)
+                f.write("\n")
+            for attempt in range(5):  # Windows: a reader holding the file open blocks os.replace briefly
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05)
+        except Exception as e:
+            log.warning("could not write summary %s: %s", path, e)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     def log_session(self):
         log.info(
@@ -303,12 +380,15 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="python -m bot.client", description="cr-arena tournament client")
     ap.add_argument("--url", default="ws://localhost:8765")
     ap.add_argument("--name", required=True)
-    ap.add_argument("--policy", choices=("scripted", "random", "learned"), default="scripted")
+    ap.add_argument("--policy", default="scripted",
+                    help="scripted | random | learned, or a spec: class:<module>.<Class>, learned:<path>")
     ap.add_argument("--model", default=None, help="model path (learned only)")
     ap.add_argument("--deck", default=DEFAULT_DECK, help='deck JSON file, or "random"')
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-matches", type=int, default=0, help="stop after N results (0 = forever)")
     ap.add_argument("--log", default=DEFAULT_LOG)
+    ap.add_argument("--summary-json", default=None,
+                    help="rewrite this JSON with session totals after every result")
     return ap.parse_args(argv)
 
 
@@ -318,7 +398,7 @@ def main(argv=None) -> None:
     deck = load_deck(a.deck, a.seed)
     log.info("deck: %s", deck)
     policy = build_policy(a.policy, a.seed, a.model)
-    client = Client(policy, deck, a.name)
+    client = Client(policy, deck, a.name, summary_path=a.summary_json, policy_label=a.policy)
     log.info("policy %s, name %s, url %s", a.policy, a.name, a.url)
     try:
         asyncio.run(run(a.url, client, a.max_matches))

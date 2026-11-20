@@ -204,3 +204,66 @@ def test_end_to_end_with_local_server(tmp_path, monkeypatch):
     assert cl.session_last_action.get("missed", 0) == 0
     assert cl.session_last_action.get("malformed", 0) == 0
     assert cl.session_last_action.get("ok", 0) > 0
+
+
+# --- policy specs and --summary-json (C17) ---------------------------------
+
+def test_policy_specs_with_colon_are_accepted():
+    from bot.scripted_v0 import ScriptedPolicyV0
+
+    assert isinstance(C.build_policy("class:bot.scripted_v0.ScriptedPolicyV0"), ScriptedPolicyV0)
+    assert isinstance(C.build_policy("scripted"), ScriptedPolicy)
+    assert isinstance(C.build_policy("random", seed=3), RandomPolicy)
+    args = C.parse_args(["--name", "x", "--policy", "class:bot.scripted_v0.ScriptedPolicyV0"])
+    assert args.policy == "class:bot.scripted_v0.ScriptedPolicyV0"
+    assert C.parse_args(["--name", "x"]).policy == "scripted" and C.parse_args(["--name", "x"]).summary_json is None
+
+
+@pytest.mark.parametrize("kind", ["nonsense", "class:bot.nope.Missing", "class:bot.scripted.NoSuchClass", "bogus:x"])
+def test_unknown_policy_exits_with_code_2(kind, capsys):
+    with pytest.raises(SystemExit) as e:
+        C.build_policy(kind)
+    assert e.value.code == 2
+    assert kind in capsys.readouterr().err
+
+
+def test_summary_json_written_after_each_result(tmp_path):
+    path = tmp_path / "sub" / "summary.json"
+    cl = C.Client(Fixed(None), DECK, "soak-x", summary_path=str(path), policy_label="scripted")
+    assert not path.exists()
+    obs = real_observations(1)[0]
+    send(cl, {"t": "start", "opponent": "o"})
+    for i, la in enumerate(["none", "ok", "missed", "malformed", "not_enough_elixir"]):
+        send(cl, {"t": "obs", "obs": {**obs, "tick": i * DECIDE_EVERY, "last_action": la}})
+    send(cl, {"t": "result", "result": "win", "crowns": [1, 0], "rating": 1016.0, "delta": 16.0, "match": "m1"})
+    s = json.loads(path.read_text(encoding="utf-8"))
+    assert s["matches"] == 1 and s["wins"] == 1 and s["losses"] == 0 and s["draws"] == 0
+    assert s["aborted"] == 0 and s["rating"] == 1016.0 and s["policy"] == "scripted"
+    assert s["last_action"] == {"malformed": 1, "missed": 1, "none": 1, "not_enough_elixir": 1, "ok": 1}
+    assert s["ignored"] == 3 and s["decisions"] == 5
+    assert s["slow_decisions"] == 0 and s["policy_errors"] == 0 and s["timestamp"]
+
+    send(cl, {"t": "start", "opponent": "o"})
+    send(cl, {"t": "result", "result": "loss", "crowns": [0, 1], "rating": 1000.0, "delta": -16.0, "match": "m2"})
+    send(cl, {"t": "aborted", "reason": "x"})
+    s = json.loads(path.read_text(encoding="utf-8"))
+    assert (s["matches"], s["wins"], s["losses"], s["aborted"], s["rating"]) == (2, 1, 1, 1, 1000.0)
+    assert s["last_action"]["ok"] == 1  # session totals, not reset per match
+    assert [p.name for p in path.parent.iterdir()] == ["summary.json"]  # no temp files left behind
+
+
+def test_summary_counts_policy_errors(tmp_path):
+    path = tmp_path / "s.json"
+    cl = C.Client(Boom(), DECK, "t", summary_path=str(path))
+    send(cl, {"t": "obs", "obs": real_observations(1)[0]})
+    send(cl, {"t": "result", "result": "draw", "crowns": [0, 0], "rating": 1000.0, "delta": 0.0, "match": "m"})
+    s = json.loads(path.read_text(encoding="utf-8"))
+    assert s["policy_errors"] == 1 and s["draws"] == 1
+
+
+def test_summary_write_failure_does_not_raise(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    cl = C.Client(Fixed(None), DECK, "t", summary_path=str(blocker / "s.json"))  # parent is a file
+    send(cl, {"t": "result", "result": "win", "crowns": [1, 0], "rating": 1.0, "delta": 1.0, "match": "m"})
+    assert cl.matches_done == 1
